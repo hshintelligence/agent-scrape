@@ -1,11 +1,15 @@
 // ============================================================================
-// AgentScrape v0.5.0 — x402-monetized MCP server for AI agents
+// AgentScrape v0.6.0 — x402-monetized + MCP-native server for AI agents
 // ============================================================================
-// Stack: Cloudflare Workers + Hono + @x402/hono v2 + xpay.sh facilitator
+// Stack: Cloudflare Workers + Hono + @x402/hono v2 + agents/mcp + agents/x402
 // Network: Base mainnet (eip155:8453)
 // payTo:   0x3F3337295fea3613A5f128a8E834A0dca30f9E9a
 // Pricing: $0.001 flat for 48h validation, then ramp to tiered matrix
-// Free tier: 10 calls/wallet/30d, tracked in KV by x402-payer address
+// Free tier (HTTP only): 10 calls/wallet/30d, tracked in KV by x402-payer
+//
+// Two surfaces:
+//   - HTTP API: POST /scrape, /extract, /screenshot, /metadata, /workflow, /session
+//   - MCP server: POST /mcp (Streamable HTTP transport, agent-discoverable)
 // ============================================================================
 
 import { Hono, Context } from "hono";
@@ -13,18 +17,21 @@ import puppeteer from "@cloudflare/puppeteer";
 import { paymentMiddleware, x402ResourceServer } from "@x402/hono";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { createMcpHandler } from "agents/mcp";
+import { withX402 } from "agents/x402";
+import { z } from "zod";
 
 // ----------------------------------------------------------------------------
 // CONFIG
 // ----------------------------------------------------------------------------
 
-const VERSION = "0.5.0";
+const VERSION = "0.6.0";
 const PAY_TO = "0x3F3337295fea3613A5f128a8E834A0dca30f9E9a";
 const NETWORK = "eip155:8453"; // Base mainnet
 const FACILITATOR_URL = "https://facilitator.xpay.sh";
 const GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
 
-// Launch pricing — all $0.001 for 48h validation
 const PRICING = {
   scrape: "$0.001",
   extract: "$0.001",
@@ -34,15 +41,21 @@ const PRICING = {
   session: "$0.001",
 } as const;
 
-// Free tier: 10 calls per wallet per 30 days
+// Numeric prices for MCP (paidTool expects number not "$0.001" string)
+const MCP_PRICES = {
+  scrape: 0.001,
+  extract: 0.001,
+  screenshot: 0.001,
+  metadata: 0.001,
+  workflow: 0.001,
+  session: 0.001,
+} as const;
+
 const FREE_TIER_LIMIT = 10;
 const FREE_TIER_TTL_SECONDS = 30 * 24 * 60 * 60;
-
-// Cache TTLs (seconds)
 const SCRAPE_CACHE_TTL = 300;
 const EXTRACT_CACHE_TTL = 300;
 
-// Paid routes (used by free-tier router)
 const PAID_ROUTES = new Set(["/scrape", "/extract", "/screenshot", "/metadata", "/workflow", "/session"]);
 
 // ----------------------------------------------------------------------------
@@ -372,26 +385,28 @@ async function checkAndIncrementFreeTier(
 }
 
 // ----------------------------------------------------------------------------
-// ENDPOINT HANDLERS — pure logic
+// CORE LOGIC — pure functions, no HTTP/MCP concerns
+// Used by both HTTP handlers AND MCP tool callbacks
 // ----------------------------------------------------------------------------
 
-async function handleScrape(c: Context<{ Bindings: Env }>) {
-  const body = (await c.req.json()) as ScrapeRequest;
+interface CoreCtx { env: Env; }
+
+async function coreScrape(ctx: CoreCtx, body: ScrapeRequest): Promise<Record<string, unknown>> {
   const url = validateUrl(body.url);
   const format = body.format || "markdown";
   const viewport = body.viewport || "desktop";
 
   const cacheKey = await buildCacheKey("scrape", { url, format, viewport, wait_for: body.wait_for, wait_ms: body.wait_ms });
-  const cached = await c.env.AGENTSCRAPE_SESSIONS.get(cacheKey);
-  if (cached) return c.json({ ...JSON.parse(cached), cache: "hit" });
+  const cached = await ctx.env.AGENTSCRAPE_SESSIONS.get(cacheKey);
+  if (cached) return { ...JSON.parse(cached), cache: "hit" };
 
-  const browser = await puppeteer.launch(c.env.MYBROWSER);
+  const browser = await puppeteer.launch(ctx.env.MYBROWSER);
   const page = await browser.newPage();
   await page.setViewport(VIEWPORTS[viewport]);
 
   try {
     if (body.session_id) {
-      const stateRaw = await c.env.AGENTSCRAPE_SESSIONS.get(`session:${body.session_id}`);
+      const stateRaw = await ctx.env.AGENTSCRAPE_SESSIONS.get(`session:${body.session_id}`);
       if (stateRaw) await restoreSessionState(page, JSON.parse(stateRaw));
     }
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
@@ -410,30 +425,28 @@ async function handleScrape(c: Context<{ Bindings: Env }>) {
       length: typeof content === "string" ? content.length : JSON.stringify(content).length,
       cache: "miss",
     };
-
-    await c.env.AGENTSCRAPE_SESSIONS.put(cacheKey, JSON.stringify(result), { expirationTtl: SCRAPE_CACHE_TTL });
-    return c.json(result);
+    await ctx.env.AGENTSCRAPE_SESSIONS.put(cacheKey, JSON.stringify(result), { expirationTtl: SCRAPE_CACHE_TTL });
+    return result;
   } finally {
     await browser.close();
   }
 }
 
-async function handleExtract(c: Context<{ Bindings: Env }>) {
-  const body = (await c.req.json()) as ExtractRequest;
+async function coreExtract(ctx: CoreCtx, body: ExtractRequest): Promise<Record<string, unknown>> {
   const url = validateUrl(body.url);
-  if (!body.prompt) return c.json({ error: "Missing 'prompt' field" }, 400);
+  if (!body.prompt) throw new Error("Missing 'prompt' field");
 
   const cacheKey = await buildCacheKey("extract", { url, prompt: body.prompt, schema: body.schema, wait_for: body.wait_for, wait_ms: body.wait_ms });
-  const cached = await c.env.AGENTSCRAPE_SESSIONS.get(cacheKey);
-  if (cached) return c.json({ ...JSON.parse(cached), cache: "hit" });
+  const cached = await ctx.env.AGENTSCRAPE_SESSIONS.get(cacheKey);
+  if (cached) return { ...JSON.parse(cached), cache: "hit" };
 
-  const browser = await puppeteer.launch(c.env.MYBROWSER);
+  const browser = await puppeteer.launch(ctx.env.MYBROWSER);
   const page = await browser.newPage();
   await page.setViewport(VIEWPORTS.desktop);
 
   try {
     if (body.session_id) {
-      const stateRaw = await c.env.AGENTSCRAPE_SESSIONS.get(`session:${body.session_id}`);
+      const stateRaw = await ctx.env.AGENTSCRAPE_SESSIONS.get(`session:${body.session_id}`);
       if (stateRaw) await restoreSessionState(page, JSON.parse(stateRaw));
     }
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
@@ -443,7 +456,7 @@ async function handleExtract(c: Context<{ Bindings: Env }>) {
     const html = await page.content();
     const text = htmlToText(html);
     const extractStart = Date.now();
-    const extracted = await groqExtract(c.env.GROQ_API_KEY, text, body.prompt, body.schema);
+    const extracted = await groqExtract(ctx.env.GROQ_API_KEY, text, body.prompt, body.schema);
     const extractMs = Date.now() - extractStart;
 
     const result = {
@@ -451,21 +464,19 @@ async function handleExtract(c: Context<{ Bindings: Env }>) {
       content_length: text.length, extract_ms: extractMs,
       model: GROQ_MODEL, cache: "miss",
     };
-
-    await c.env.AGENTSCRAPE_SESSIONS.put(cacheKey, JSON.stringify(result), { expirationTtl: EXTRACT_CACHE_TTL });
-    return c.json(result);
+    await ctx.env.AGENTSCRAPE_SESSIONS.put(cacheKey, JSON.stringify(result), { expirationTtl: EXTRACT_CACHE_TTL });
+    return result;
   } finally {
     await browser.close();
   }
 }
 
-async function handleScreenshot(c: Context<{ Bindings: Env }>) {
-  const body = (await c.req.json()) as ScreenshotRequest;
+async function coreScreenshot(ctx: CoreCtx, body: ScreenshotRequest): Promise<Record<string, unknown>> {
   const url = validateUrl(body.url);
   const viewport = body.viewport || "desktop";
   const fullPage = body.full_page ?? false;
 
-  const browser = await puppeteer.launch(c.env.MYBROWSER);
+  const browser = await puppeteer.launch(ctx.env.MYBROWSER);
   const page = await browser.newPage();
   await page.setViewport(VIEWPORTS[viewport]);
 
@@ -475,50 +486,47 @@ async function handleScreenshot(c: Context<{ Bindings: Env }>) {
     if (body.wait_ms) await new Promise(r => setTimeout(r, Math.min(body.wait_ms!, 10000)));
 
     const buffer = await page.screenshot({ fullPage, type: "png" }) as Uint8Array;
-    return c.json({
+    return {
       url, viewport, full_page: fullPage,
       format: "png", bytes: buffer.byteLength,
       data_base64: uint8ToBase64(buffer),
-    });
+    };
   } finally {
     await browser.close();
   }
 }
 
-async function handleMetadata(c: Context<{ Bindings: Env }>) {
-  const body = (await c.req.json()) as MetadataRequest;
+async function coreMetadata(ctx: CoreCtx, body: MetadataRequest): Promise<Record<string, unknown>> {
   const url = validateUrl(body.url);
-  const browser = await puppeteer.launch(c.env.MYBROWSER);
+  const browser = await puppeteer.launch(ctx.env.MYBROWSER);
   const page = await browser.newPage();
   await page.setViewport(VIEWPORTS.desktop);
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
     const metadata = await extractMetadataFromPage(page);
-    return c.json({ url, metadata });
+    return { url, metadata };
   } finally {
     await browser.close();
   }
 }
 
-async function handleSession(c: Context<{ Bindings: Env }>) {
-  const body = (await c.req.json().catch(() => ({}))) as SessionRequest;
+async function coreSession(ctx: CoreCtx, body: SessionRequest): Promise<Record<string, unknown>> {
   const ttl = Math.min(body.ttl_seconds ?? 1800, 7200);
   const sessionId = generateSessionId();
   const state: SessionState = {
     cookies: [], localStorage: {}, sessionStorage: {},
     created_at: new Date().toISOString(),
   };
-  await c.env.AGENTSCRAPE_SESSIONS.put(`session:${sessionId}`, JSON.stringify(state), { expirationTtl: ttl });
-  return c.json({ session_id: sessionId, ttl_seconds: ttl, created_at: state.created_at });
+  await ctx.env.AGENTSCRAPE_SESSIONS.put(`session:${sessionId}`, JSON.stringify(state), { expirationTtl: ttl });
+  return { session_id: sessionId, ttl_seconds: ttl, created_at: state.created_at };
 }
 
-async function handleWorkflow(c: Context<{ Bindings: Env }>) {
-  const body = (await c.req.json()) as WorkflowRequest;
-  if (!Array.isArray(body.steps) || body.steps.length === 0) return c.json({ error: "steps array required" }, 400);
-  if (body.steps.length > 20) return c.json({ error: "max 20 steps per workflow" }, 400);
+async function coreWorkflow(ctx: CoreCtx, body: WorkflowRequest): Promise<Record<string, unknown>> {
+  if (!Array.isArray(body.steps) || body.steps.length === 0) throw new Error("steps array required");
+  if (body.steps.length > 20) throw new Error("max 20 steps per workflow");
 
   const viewport = body.viewport || "desktop";
-  const browser = await puppeteer.launch(c.env.MYBROWSER);
+  const browser = await puppeteer.launch(ctx.env.MYBROWSER);
   const page = await browser.newPage();
   await page.setViewport(VIEWPORTS[viewport]);
 
@@ -527,7 +535,7 @@ async function handleWorkflow(c: Context<{ Bindings: Env }>) {
 
   try {
     if (body.session_id) {
-      const stateRaw = await c.env.AGENTSCRAPE_SESSIONS.get(`session:${body.session_id}`);
+      const stateRaw = await ctx.env.AGENTSCRAPE_SESSIONS.get(`session:${body.session_id}`);
       if (stateRaw) await restoreSessionState(page, JSON.parse(stateRaw));
     }
 
@@ -570,7 +578,7 @@ async function handleWorkflow(c: Context<{ Bindings: Env }>) {
           if (!step.prompt) throw new Error("extract_ai requires prompt");
           const html = await page.content();
           const text = htmlToText(html);
-          const extracted = await groqExtract(c.env.GROQ_API_KEY, text, step.prompt);
+          const extracted = await groqExtract(ctx.env.GROQ_API_KEY, text, step.prompt);
           results.push({ step: i, action: "extract_ai", extracted, ms: Date.now() - stepStart });
         } else if (step.action === "evaluate") {
           if (!step.script) throw new Error("evaluate requires script");
@@ -587,16 +595,65 @@ async function handleWorkflow(c: Context<{ Bindings: Env }>) {
 
     if (body.persist_session && body.session_id) {
       const state = await captureSessionState(page);
-      await c.env.AGENTSCRAPE_SESSIONS.put(`session:${body.session_id}`, JSON.stringify(state), { expirationTtl: 1800 });
+      await ctx.env.AGENTSCRAPE_SESSIONS.put(`session:${body.session_id}`, JSON.stringify(state), { expirationTtl: 1800 });
     }
 
-    return c.json({ steps_executed: results.length, total_ms: Date.now() - startTime, results });
+    return { steps_executed: results.length, total_ms: Date.now() - startTime, results };
   } finally {
     await browser.close();
   }
 }
 
-// Dispatcher: route by pathname for free-tier short-circuit
+// ----------------------------------------------------------------------------
+// HTTP ENDPOINT HANDLERS — thin wrappers around core logic
+// ----------------------------------------------------------------------------
+
+async function handleScrape(c: Context<{ Bindings: Env }>) {
+  const body = (await c.req.json()) as ScrapeRequest;
+  const result = await coreScrape({ env: c.env }, body);
+  return c.json(result);
+}
+
+async function handleExtract(c: Context<{ Bindings: Env }>) {
+  const body = (await c.req.json()) as ExtractRequest;
+  try {
+    const result = await coreExtract({ env: c.env }, body);
+    return c.json(result);
+  } catch (err: any) {
+    if (err.message?.includes("'prompt'")) return c.json({ error: err.message }, 400);
+    throw err;
+  }
+}
+
+async function handleScreenshot(c: Context<{ Bindings: Env }>) {
+  const body = (await c.req.json()) as ScreenshotRequest;
+  const result = await coreScreenshot({ env: c.env }, body);
+  return c.json(result);
+}
+
+async function handleMetadata(c: Context<{ Bindings: Env }>) {
+  const body = (await c.req.json()) as MetadataRequest;
+  const result = await coreMetadata({ env: c.env }, body);
+  return c.json(result);
+}
+
+async function handleSession(c: Context<{ Bindings: Env }>) {
+  const body = (await c.req.json().catch(() => ({}))) as SessionRequest;
+  const result = await coreSession({ env: c.env }, body);
+  return c.json(result);
+}
+
+async function handleWorkflow(c: Context<{ Bindings: Env }>) {
+  const body = (await c.req.json()) as WorkflowRequest;
+  try {
+    const result = await coreWorkflow({ env: c.env }, body);
+    return c.json(result);
+  } catch (err: any) {
+    if (err.message?.includes("steps")) return c.json({ error: err.message }, 400);
+    throw err;
+  }
+}
+
 async function dispatchPaidEndpoint(c: Context<{ Bindings: Env }>): Promise<Response> {
   const path = c.req.path;
   if (path === "/scrape") return handleScrape(c);
@@ -609,25 +666,156 @@ async function dispatchPaidEndpoint(c: Context<{ Bindings: Env }>): Promise<Resp
 }
 
 // ----------------------------------------------------------------------------
-// HONO APP — factory pattern with free-tier short-circuit BEFORE x402
+// MCP SERVER — agent-discoverable via Streamable HTTP at /mcp
+// ----------------------------------------------------------------------------
+
+function buildMcpServer(env: Env) {
+  const baseServer = new McpServer({
+    name: "agent-scrape",
+    version: VERSION,
+  });
+
+  const server = withX402(baseServer, {
+    network: NETWORK,
+    recipient: PAY_TO,
+    facilitator: { url: FACILITATOR_URL },
+  });
+
+  server.paidTool(
+    "scrape_webpage",
+    "Scrape any webpage and return content as markdown, html, text, or json. Pay-per-call web scraping for AI agents.",
+    MCP_PRICES.scrape,
+    {
+      url: z.string().describe("The URL to scrape (http or https)"),
+      format: z.enum(["markdown", "html", "text", "json"]).optional().describe("Output format (default: markdown)"),
+      wait_for: z.string().optional().describe("CSS selector to wait for before extracting"),
+      wait_ms: z.number().optional().describe("Milliseconds to wait after page load (max 10000)"),
+      viewport: z.enum(["desktop", "mobile", "tablet"]).optional().describe("Viewport size (default: desktop)"),
+    },
+    { title: "Scrape Webpage" },
+    async ({ url, format, wait_for, wait_ms, viewport }) => {
+      const result = await coreScrape({ env }, { url, format, wait_for, wait_ms, viewport });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  server.paidTool(
+    "extract_structured_data",
+    "AI-powered structured data extraction from any webpage using natural language. Returns JSON matching your prompt or schema.",
+    MCP_PRICES.extract,
+    {
+      url: z.string().describe("The URL to extract from"),
+      prompt: z.string().describe("Natural language description of what to extract"),
+      schema: z.record(z.unknown()).optional().describe("Optional JSON schema for the response"),
+      wait_for: z.string().optional(),
+      wait_ms: z.number().optional(),
+    },
+    { title: "Extract Structured Data" },
+    async ({ url, prompt, schema, wait_for, wait_ms }) => {
+      const result = await coreExtract({ env }, { url, prompt, schema, wait_for, wait_ms });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  server.paidTool(
+    "screenshot_webpage",
+    "Capture a PNG screenshot of any webpage. Supports desktop, mobile, and tablet viewports, plus full-page mode.",
+    MCP_PRICES.screenshot,
+    {
+      url: z.string(),
+      full_page: z.boolean().optional().describe("Capture full scrollable page (default: false)"),
+      viewport: z.enum(["desktop", "mobile", "tablet"]).optional(),
+      wait_for: z.string().optional(),
+      wait_ms: z.number().optional(),
+    },
+    { title: "Screenshot Webpage" },
+    async ({ url, full_page, viewport, wait_for, wait_ms }) => {
+      const result = await coreScreenshot({ env }, { url, full_page, viewport, wait_for, wait_ms });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  server.paidTool(
+    "extract_metadata",
+    "Extract page metadata: title, description, Open Graph, Twitter cards, JSON-LD, canonical URL, and all meta tags.",
+    MCP_PRICES.metadata,
+    { url: z.string() },
+    { title: "Extract Page Metadata" },
+    async ({ url }) => {
+      const result = await coreMetadata({ env }, { url });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  server.paidTool(
+    "create_browser_session",
+    "Create a stateful browser session that persists cookies and localStorage across multiple scrape/workflow calls.",
+    MCP_PRICES.session,
+    { ttl_seconds: z.number().optional().describe("Session TTL (default 1800, max 7200)") },
+    { title: "Create Browser Session" },
+    async ({ ttl_seconds }) => {
+      const result = await coreSession({ env }, { ttl_seconds });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  server.paidTool(
+    "run_workflow",
+    "Execute a multi-step browser workflow atomically: navigate, click, type, wait, scroll, screenshot, extract, evaluate. Up to 20 steps.",
+    MCP_PRICES.workflow,
+    {
+      steps: z.array(z.object({
+        action: z.enum(["navigate", "click", "type", "wait_for", "wait_ms", "scroll", "screenshot", "extract", "extract_ai", "evaluate"]),
+        url: z.string().optional(),
+        selector: z.string().optional(),
+        text: z.string().optional(),
+        ms: z.number().optional(),
+        full_page: z.boolean().optional(),
+        prompt: z.string().optional(),
+        script: z.string().optional(),
+        format: z.enum(["markdown", "html", "text"]).optional(),
+      })).describe("Ordered list of workflow steps to execute"),
+      session_id: z.string().optional(),
+      persist_session: z.boolean().optional(),
+      viewport: z.enum(["desktop", "mobile", "tablet"]).optional(),
+    },
+    { title: "Run Browser Workflow" },
+    async (args) => {
+      const result = await coreWorkflow({ env }, args as WorkflowRequest);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  return server;
+}
+
+// ----------------------------------------------------------------------------
+// HONO APP — factory pattern, HTTP + MCP coexist on same Worker
 // ----------------------------------------------------------------------------
 
 function buildApp(env: Env) {
   const app = new Hono<{ Bindings: Env }>();
 
-  // Free / health endpoint
+  // Service identity (free)
   app.get("/", (c) => {
     return c.json({
       service: "AgentScrape",
+      tagline: "Pay-per-call web scraping for AI agents — no signup, no API keys, just USDC",
       version: VERSION,
-      description: "x402-monetized scraping toolkit for AI agents",
       payTo: PAY_TO,
       network: NETWORK,
       facilitator: FACILITATOR_URL,
-      free_tier: {
-        limit_per_wallet: FREE_TIER_LIMIT,
-        window_days: 30,
-        header: "x402-payer (wallet address)",
+      surfaces: {
+        http: {
+          description: "Direct HTTP API with x402 payment gate",
+          endpoints: ["POST /scrape", "POST /extract", "POST /screenshot", "POST /metadata", "POST /workflow", "POST /session"],
+          free_tier: { limit_per_wallet: FREE_TIER_LIMIT, window_days: 30, header: "x402-payer" },
+        },
+        mcp: {
+          description: "MCP Streamable HTTP transport for agent frameworks (Claude Desktop, Cursor, etc.)",
+          endpoint: "POST /mcp",
+          tools: ["scrape_webpage", "extract_structured_data", "screenshot_webpage", "extract_metadata", "create_browser_session", "run_workflow"],
+        },
       },
       tools: {
         scrape: { price: PRICING.scrape, method: "POST", description: "Scrape any URL to markdown/html/text/json" },
@@ -641,30 +829,32 @@ function buildApp(env: Env) {
     });
   });
 
-  // FREE-TIER SHORT-CIRCUIT — runs BEFORE x402 middleware, can fully handle request
+  // MCP endpoint — delegate to createMcpHandler
+  app.all("/mcp", async (c) => {
+    const mcpServer = buildMcpServer(c.env);
+    const handler = createMcpHandler(mcpServer);
+    return handler(c.req.raw, c.env as any, c.executionCtx as any);
+  });
+
+  // Free-tier short-circuit (HTTP API only — MCP has its own payment flow via withX402)
   app.use("*", async (c, next) => {
     const path = c.req.path;
     const method = c.req.method;
     if (method !== "POST" || !PAID_ROUTES.has(path)) return next();
-
-    // If request already includes x402 payment header, skip free tier and let x402 process it
     if (c.req.header("X-PAYMENT") || c.req.header("x-payment")) return next();
 
     const payer = c.req.header("x402-payer") || c.req.header("X402-Payer");
     const result = await checkAndIncrementFreeTier(c.env, payer);
     if (result.allowed) {
-      // SHORT-CIRCUIT: handle request directly, skip x402 entirely
       const response = await dispatchPaidEndpoint(c);
       response.headers.set("X-Free-Tier-Remaining", String(result.remaining));
       response.headers.set("X-Free-Tier-Wallet", result.wallet || "");
       return response;
     }
-
-    // No free tier available → fall through to x402 middleware
     return next();
   });
 
-  // x402 payment middleware
+  // x402-hono payment middleware (HTTP routes)
   const facilitatorClient = new HTTPFacilitatorClient({ url: FACILITATOR_URL });
   const resourceServer = new x402ResourceServer(facilitatorClient)
     .register(NETWORK, new ExactEvmScheme());
@@ -676,14 +866,14 @@ function buildApp(env: Env) {
         "POST /extract": { accepts: { scheme: "exact", price: PRICING.extract, network: NETWORK, payTo: PAY_TO }, description: "AI-powered structured extraction via Groq + Llama 4 Scout" },
         "POST /screenshot": { accepts: { scheme: "exact", price: PRICING.screenshot, network: NETWORK, payTo: PAY_TO }, description: "PNG screenshot with viewport control (desktop/mobile/tablet)" },
         "POST /metadata": { accepts: { scheme: "exact", price: PRICING.metadata, network: NETWORK, payTo: PAY_TO }, description: "Extract title, description, OG, Twitter cards, JSON-LD" },
-        "POST /workflow": { accepts: { scheme: "exact", price: PRICING.workflow, network: NETWORK, payTo: PAY_TO }, description: "Multi-step atomic execution (navigate/click/type/extract/extract_ai/screenshot)" },
-        "POST /session": { accepts: { scheme: "exact", price: PRICING.session, network: NETWORK, payTo: PAY_TO }, description: "Create stateful browser session with cookie/localStorage persistence" },
+        "POST /workflow": { accepts: { scheme: "exact", price: PRICING.workflow, network: NETWORK, payTo: PAY_TO }, description: "Multi-step atomic execution" },
+        "POST /session": { accepts: { scheme: "exact", price: PRICING.session, network: NETWORK, payTo: PAY_TO }, description: "Create stateful browser session" },
       },
       resourceServer,
     ),
   );
 
-  // Paid endpoints (reached after x402 middleware approves payment)
+  // Paid HTTP endpoints (post-payment-gate)
   app.post("/scrape", handleScrape);
   app.post("/extract", handleExtract);
   app.post("/screenshot", handleScreenshot);
@@ -691,7 +881,7 @@ function buildApp(env: Env) {
   app.post("/workflow", handleWorkflow);
   app.post("/session", handleSession);
 
-  app.notFound((c) => c.json({ error: "Not Found", available_endpoints: ["GET /", "POST /scrape", "POST /extract", "POST /screenshot", "POST /metadata", "POST /workflow", "POST /session"] }, 404));
+  app.notFound((c) => c.json({ error: "Not Found", available_endpoints: ["GET /", "POST /mcp", "POST /scrape", "POST /extract", "POST /screenshot", "POST /metadata", "POST /workflow", "POST /session"] }, 404));
 
   app.onError((err, c) => {
     console.error("Worker error:", err);
