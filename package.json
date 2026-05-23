@@ -19,6 +19,10 @@
   "dependencies": {
     "@cloudflare/puppeteer": "^1.1.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@x402/core": "^2.13.0",
+    "@x402/evm": "^2.13.0",
+    "@x402/hono": "^2.13.0",
+    "hono": "^4.12.22",
     "zod": "^4.4.3"
   }
 }
