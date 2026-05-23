@@ -10,6 +10,8 @@ interface ScrapeRequest {
 	output_format?: "markdown" | "html" | "text" | "json";
 	wait_for?: string;
 	timeout_ms?: number;
+	include_screenshot?: boolean;
+	include_metadata?: boolean;
 }
 
 interface ExtractRequest {
@@ -18,12 +20,45 @@ interface ExtractRequest {
 	schema?: Record<string, unknown>;
 	wait_for?: string;
 	timeout_ms?: number;
+	include_screenshot?: boolean;
+}
+
+interface ScreenshotRequest {
+	url: string;
+	full_page?: boolean;
+	viewport?: "desktop" | "mobile" | "tablet";
+	wait_for?: string;
+	timeout_ms?: number;
+}
+
+interface MetadataRequest {
+	url: string;
+	wait_for?: string;
+	timeout_ms?: number;
+}
+
+interface PageMetadata {
+	title: string;
+	description: string | null;
+	canonical: string | null;
+	og: Record<string, string>;
+	twitter: Record<string, string>;
+	jsonld: unknown[];
+	favicon: string | null;
+	language: string | null;
+	all_meta: Record<string, string>;
 }
 
 const GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
 const GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
 const DEFAULT_UA =
 	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+
+const VIEWPORTS = {
+	desktop: { width: 1920, height: 1080, isMobile: false },
+	mobile: { width: 390, height: 844, isMobile: true },
+	tablet: { width: 1024, height: 1366, isMobile: false },
+};
 
 function htmlToText(html: string): string {
 	return html
@@ -78,24 +113,126 @@ function validateUrl(rawUrl: string): { ok: true; url: URL } | { ok: false; erro
 	return { ok: true, url: parsed };
 }
 
-async function fetchPageMarkdown(
+function uint8ToBase64(bytes: Uint8Array): string {
+	let binary = "";
+	const chunkSize = 0x8000;
+	for (let i = 0; i < bytes.length; i += chunkSize) {
+		const chunk = bytes.subarray(i, i + chunkSize);
+		binary += String.fromCharCode.apply(null, Array.from(chunk));
+	}
+	return btoa(binary);
+}
+
+async function extractMetadataFromPage(page: any): Promise<PageMetadata> {
+	return await page.evaluate(() => {
+		const getMeta = (name: string): string | null => {
+			const el =
+				document.querySelector(`meta[name="${name}"]`) ||
+				document.querySelector(`meta[property="${name}"]`);
+			return el ? (el as HTMLMetaElement).content : null;
+		};
+
+		const allMeta: Record<string, string> = {};
+		document.querySelectorAll("meta").forEach((m) => {
+			const key = m.getAttribute("name") || m.getAttribute("property");
+			const val = m.getAttribute("content");
+			if (key && val) allMeta[key] = val;
+		});
+
+		const og: Record<string, string> = {};
+		const twitter: Record<string, string> = {};
+		for (const [k, v] of Object.entries(allMeta)) {
+			if (k.startsWith("og:")) og[k.slice(3)] = v;
+			if (k.startsWith("twitter:")) twitter[k.slice(8)] = v;
+		}
+
+		const jsonld: unknown[] = [];
+		document.querySelectorAll('script[type="application/ld+json"]').forEach((s) => {
+			try {
+				jsonld.push(JSON.parse(s.textContent || "{}"));
+			} catch {
+				/* skip invalid */
+			}
+		});
+
+		const canonicalEl = document.querySelector('link[rel="canonical"]') as HTMLLinkElement | null;
+		const faviconEl =
+			(document.querySelector('link[rel="icon"]') as HTMLLinkElement | null) ||
+			(document.querySelector('link[rel="shortcut icon"]') as HTMLLinkElement | null);
+		const htmlEl = document.querySelector("html");
+
+		return {
+			title: document.title,
+			description: getMeta("description"),
+			canonical: canonicalEl ? canonicalEl.href : null,
+			og,
+			twitter,
+			jsonld,
+			favicon: faviconEl ? faviconEl.href : null,
+			language: htmlEl ? htmlEl.getAttribute("lang") : null,
+			all_meta: allMeta,
+		};
+	});
+}
+
+interface PageFetchResult {
+	html: string;
+	markdown: string;
+	title: string;
+	finalUrl: string;
+	screenshot?: string;
+	metadata?: PageMetadata;
+}
+
+async function fetchPage(
 	env: Env,
-	url: string,
-	waitFor: string | undefined,
-	timeoutMs: number
-): Promise<{ html: string; markdown: string; title: string; finalUrl: string }> {
+	options: {
+		url: string;
+		waitFor?: string;
+		timeoutMs: number;
+		viewport?: "desktop" | "mobile" | "tablet";
+		captureScreenshot?: boolean;
+		fullPageScreenshot?: boolean;
+		extractMeta?: boolean;
+		extractContent?: boolean;
+	}
+): Promise<PageFetchResult> {
 	const browser = await puppeteer.launch(env.MYBROWSER);
 	try {
 		const page = await browser.newPage();
+		const vp = VIEWPORTS[options.viewport ?? "desktop"];
+		await page.setViewport(vp);
 		await page.setUserAgent(DEFAULT_UA);
-		await page.goto(url, { waitUntil: "networkidle0", timeout: timeoutMs });
-		if (waitFor) {
-			await page.waitForSelector(waitFor, { timeout: timeoutMs });
+		await page.goto(options.url, { waitUntil: "networkidle0", timeout: options.timeoutMs });
+		if (options.waitFor) {
+			await page.waitForSelector(options.waitFor, { timeout: options.timeoutMs });
 		}
-		const html = await page.content();
+
 		const title = await page.title();
 		const finalUrl = page.url();
-		return { html, markdown: htmlToMarkdown(html), title, finalUrl };
+
+		let html = "";
+		let markdown = "";
+		if (options.extractContent !== false) {
+			html = await page.content();
+			markdown = htmlToMarkdown(html);
+		}
+
+		let screenshot: string | undefined;
+		if (options.captureScreenshot) {
+			const buf = await page.screenshot({
+				type: "png",
+				fullPage: options.fullPageScreenshot ?? false,
+			});
+			screenshot = uint8ToBase64(new Uint8Array(buf));
+		}
+
+		let metadata: PageMetadata | undefined;
+		if (options.extractMeta) {
+			metadata = await extractMetadataFromPage(page);
+		}
+
+		return { html, markdown, title, finalUrl, screenshot, metadata };
 	} finally {
 		await browser.close();
 	}
@@ -180,9 +317,14 @@ export default {
 		if (request.method === "GET" && url.pathname === "/") {
 			return jsonResponse({
 				service: "AgentScrape",
-				version: "0.2.0",
+				version: "0.3.0",
 				status: "alive",
-				tools: ["scrape_webpage", "extract_structured_data"],
+				tools: [
+					"scrape_webpage",
+					"extract_structured_data",
+					"screenshot_webpage",
+					"get_page_metadata",
+				],
 				model: GROQ_MODEL,
 			});
 		}
@@ -195,68 +337,63 @@ export default {
 			} catch {
 				return jsonResponse({ error: "Invalid JSON body" }, 400);
 			}
-
-			if (!body.url) {
-				return jsonResponse({ error: "Missing required field: url" }, 400);
-			}
+			if (!body.url) return jsonResponse({ error: "Missing required field: url" }, 400);
 
 			const urlCheck = validateUrl(body.url);
-			if (!urlCheck.ok) {
-				return jsonResponse({ error: urlCheck.error }, 400);
-			}
+			if (!urlCheck.ok) return jsonResponse({ error: urlCheck.error }, 400);
 
 			const outputFormat = body.output_format ?? "markdown";
 			const timeoutMs = Math.min(body.timeout_ms ?? 30000, 60000);
 			const startedAt = Date.now();
 
 			try {
-				const { html, markdown, title, finalUrl } = await fetchPageMarkdown(
-					env,
-					body.url,
-					body.wait_for,
-					timeoutMs
-				);
+				const result = await fetchPage(env, {
+					url: body.url,
+					waitFor: body.wait_for,
+					timeoutMs,
+					captureScreenshot: body.include_screenshot ?? false,
+					extractMeta: body.include_metadata ?? false,
+				});
 
 				let content: string;
 				switch (outputFormat) {
 					case "html":
-						content = html;
+						content = result.html;
 						break;
 					case "text":
-						content = htmlToText(html);
+						content = htmlToText(result.html);
 						break;
 					case "json":
 						content = JSON.stringify({
-							title,
-							url: finalUrl,
-							text: htmlToText(html),
-							html_length: html.length,
+							title: result.title,
+							url: result.finalUrl,
+							text: htmlToText(result.html),
+							html_length: result.html.length,
 						});
 						break;
 					case "markdown":
 					default:
-						content = markdown;
+						content = result.markdown;
 						break;
 				}
 
-				return jsonResponse({
+				const payload: Record<string, unknown> = {
 					success: true,
-					url: finalUrl,
-					title,
+					url: result.finalUrl,
+					title: result.title,
 					output_format: outputFormat,
 					content,
 					elapsed_ms: Date.now() - startedAt,
 					scraped_at: new Date().toISOString(),
-				});
+				};
+				if (result.screenshot) payload.screenshot_base64 = result.screenshot;
+				if (result.metadata) payload.metadata = result.metadata;
+
+				return jsonResponse(payload);
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
 				return jsonResponse(
-					{
-						success: false,
-						error: "Scrape failed",
-						detail: message,
-						elapsed_ms: Date.now() - startedAt,
-					},
+					{ success: false, error: "Scrape failed", detail: message, elapsed_ms: Date.now() - startedAt },
 					500
 				);
 			}
@@ -270,49 +407,42 @@ export default {
 			} catch {
 				return jsonResponse({ error: "Invalid JSON body" }, 400);
 			}
-
-			if (!body.url) {
-				return jsonResponse({ error: "Missing required field: url" }, 400);
-			}
-			if (!body.instruction || body.instruction.trim().length === 0) {
+			if (!body.url) return jsonResponse({ error: "Missing required field: url" }, 400);
+			if (!body.instruction || body.instruction.trim().length === 0)
 				return jsonResponse({ error: "Missing required field: instruction" }, 400);
-			}
-			if (!env.GROQ_API_KEY) {
+			if (!env.GROQ_API_KEY)
 				return jsonResponse({ error: "Server misconfigured: GROQ_API_KEY missing" }, 500);
-			}
 
 			const urlCheck = validateUrl(body.url);
-			if (!urlCheck.ok) {
-				return jsonResponse({ error: urlCheck.error }, 400);
-			}
+			if (!urlCheck.ok) return jsonResponse({ error: urlCheck.error }, 400);
 
 			const timeoutMs = Math.min(body.timeout_ms ?? 30000, 60000);
 			const startedAt = Date.now();
 
 			try {
-				const { markdown, title, finalUrl } = await fetchPageMarkdown(
-					env,
-					body.url,
-					body.wait_for,
-					timeoutMs
-				);
+				const result = await fetchPage(env, {
+					url: body.url,
+					waitFor: body.wait_for,
+					timeoutMs,
+					captureScreenshot: body.include_screenshot ?? false,
+				});
 
 				const fetchMs = Date.now() - startedAt;
 				const extractionStart = Date.now();
 
 				const { data, tokens_used, model } = await groqExtract(
 					env.GROQ_API_KEY,
-					markdown,
-					title,
-					finalUrl,
+					result.markdown,
+					result.title,
+					result.finalUrl,
 					body.instruction,
 					body.schema
 				);
 
-				return jsonResponse({
+				const payload: Record<string, unknown> = {
 					success: true,
-					url: finalUrl,
-					title,
+					url: result.finalUrl,
+					title: result.title,
 					instruction: body.instruction,
 					data,
 					model,
@@ -321,16 +451,102 @@ export default {
 					extraction_ms: Date.now() - extractionStart,
 					elapsed_ms: Date.now() - startedAt,
 					extracted_at: new Date().toISOString(),
+				};
+				if (result.screenshot) payload.screenshot_base64 = result.screenshot;
+
+				return jsonResponse(payload);
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				return jsonResponse(
+					{ success: false, error: "Extraction failed", detail: message, elapsed_ms: Date.now() - startedAt },
+					500
+				);
+			}
+		}
+
+		// Screenshot only
+		if (request.method === "POST" && url.pathname === "/screenshot") {
+			let body: ScreenshotRequest;
+			try {
+				body = await request.json();
+			} catch {
+				return jsonResponse({ error: "Invalid JSON body" }, 400);
+			}
+			if (!body.url) return jsonResponse({ error: "Missing required field: url" }, 400);
+
+			const urlCheck = validateUrl(body.url);
+			if (!urlCheck.ok) return jsonResponse({ error: urlCheck.error }, 400);
+
+			const timeoutMs = Math.min(body.timeout_ms ?? 30000, 60000);
+			const startedAt = Date.now();
+
+			try {
+				const result = await fetchPage(env, {
+					url: body.url,
+					waitFor: body.wait_for,
+					timeoutMs,
+					viewport: body.viewport ?? "desktop",
+					captureScreenshot: true,
+					fullPageScreenshot: body.full_page ?? false,
+					extractContent: false,
+				});
+
+				return jsonResponse({
+					success: true,
+					url: result.finalUrl,
+					title: result.title,
+					viewport: body.viewport ?? "desktop",
+					full_page: body.full_page ?? false,
+					screenshot_base64: result.screenshot,
+					format: "png",
+					elapsed_ms: Date.now() - startedAt,
+					captured_at: new Date().toISOString(),
 				});
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
 				return jsonResponse(
-					{
-						success: false,
-						error: "Extraction failed",
-						detail: message,
-						elapsed_ms: Date.now() - startedAt,
-					},
+					{ success: false, error: "Screenshot failed", detail: message, elapsed_ms: Date.now() - startedAt },
+					500
+				);
+			}
+		}
+
+		// Metadata only
+		if (request.method === "POST" && url.pathname === "/metadata") {
+			let body: MetadataRequest;
+			try {
+				body = await request.json();
+			} catch {
+				return jsonResponse({ error: "Invalid JSON body" }, 400);
+			}
+			if (!body.url) return jsonResponse({ error: "Missing required field: url" }, 400);
+
+			const urlCheck = validateUrl(body.url);
+			if (!urlCheck.ok) return jsonResponse({ error: urlCheck.error }, 400);
+
+			const timeoutMs = Math.min(body.timeout_ms ?? 30000, 60000);
+			const startedAt = Date.now();
+
+			try {
+				const result = await fetchPage(env, {
+					url: body.url,
+					waitFor: body.wait_for,
+					timeoutMs,
+					extractMeta: true,
+					extractContent: false,
+				});
+
+				return jsonResponse({
+					success: true,
+					url: result.finalUrl,
+					metadata: result.metadata,
+					elapsed_ms: Date.now() - startedAt,
+					extracted_at: new Date().toISOString(),
+				});
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				return jsonResponse(
+					{ success: false, error: "Metadata extraction failed", detail: message, elapsed_ms: Date.now() - startedAt },
 					500
 				);
 			}
