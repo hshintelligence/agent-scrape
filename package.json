@@ -17,6 +17,7 @@
     "wrangler": "^4.94.0"
   },
   "dependencies": {
+    "@cloudflare/puppeteer": "^1.1.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^4.4.3"
   }
