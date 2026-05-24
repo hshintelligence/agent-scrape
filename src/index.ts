@@ -59,6 +59,24 @@ const SCRAPE_CACHE_TTL = 300;
 const EXTRACT_CACHE_TTL = 300;
 
 const PAID_ROUTES = new Set(["/scrape", "/extract", "/screenshot", "/metadata", "/workflow", "/session"]);
+const BROWSER_AGENT_ROUTES = new Set([...PAID_ROUTES, "/mcp"]);
+const PAYMENT_CORS_HEADERS = [
+  "Accept",
+  "Authorization",
+  "Content-Type",
+  "MCP-Protocol-Version",
+  "Payment-Signature",
+  "X-Payment",
+  "mcp-session-id",
+  "x402-payer",
+].join(", ");
+const PAYMENT_EXPOSE_HEADERS = [
+  "Payment-Required",
+  "X-Free-Tier-Remaining",
+  "X-Free-Tier-Wallet",
+  "X-Payment-Response",
+  "mcp-session-id",
+].join(", ");
 
 // ----------------------------------------------------------------------------
 // TYPES
@@ -866,8 +884,36 @@ function buildMcpServer(env: Env) {
 function buildApp(env: Env) {
   const app = new Hono<{ Bindings: Env }>();
 
-  // Service identity (free)
-  app.get("/", (c) => {
+  app.use("*", async (c, next) => {
+    const path = c.req.path;
+    if (BROWSER_AGENT_ROUTES.has(path) && c.req.method === "OPTIONS") {
+      const origin = c.req.header("Origin") || "*";
+      return c.body(null, 204, {
+        "Access-Control-Allow-Headers": PAYMENT_CORS_HEADERS,
+        "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Max-Age": "86400",
+        Vary: "Origin",
+      });
+    }
+
+    await next();
+
+    if (BROWSER_AGENT_ROUTES.has(path)) {
+      const origin = c.req.header("Origin") || "*";
+      c.res.headers.set("Access-Control-Allow-Headers", PAYMENT_CORS_HEADERS);
+      c.res.headers.set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+      c.res.headers.set("Access-Control-Allow-Origin", origin);
+      c.res.headers.set("Access-Control-Expose-Headers", PAYMENT_EXPOSE_HEADERS);
+      c.res.headers.set("Vary", "Origin");
+    }
+
+    if (c.res.status === 402) {
+      c.res.headers.set("Cache-Control", "private, no-store");
+    }
+  });
+
+  const serviceProfile = (c: Context<{ Bindings: Env }>) => {
     return c.json({
       service: "AgentScrape",
       tagline: "Pay-per-call web scraping for AI agents — no signup, no API keys, just USDC",
@@ -897,7 +943,12 @@ function buildApp(env: Env) {
       },
       model: GROQ_MODEL,
     });
-  });
+  };
+
+  // Service identity (free)
+  app.get("/", serviceProfile);
+  app.get("/.well-known/x402", serviceProfile);
+  app.get("/.well-known/x402.json", serviceProfile);
 
   // MCP endpoint — delegate to createMcpHandler
   app.all("/mcp", async (c) => {
