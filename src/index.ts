@@ -21,6 +21,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpHandler } from "agents/mcp";
 import { withX402 } from "agents/x402";
 import { z } from "zod";
+import { SignJWT, importPKCS8 } from "jose";
 
 // ----------------------------------------------------------------------------
 // CONFIG
@@ -29,7 +30,7 @@ import { z } from "zod";
 const VERSION = "0.6.0";
 const PAY_TO = "0x3F3337295fea3613A5f128a8E834A0dca30f9E9a";
 const NETWORK = "eip155:8453"; // Base mainnet
-const FACILITATOR_URL = "https://facilitator.xpay.sh";
+const FACILITATOR_URL = "https://api.cdp.coinbase.com/platform/v2/x402";
 const GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
 
 const PRICING = {
@@ -66,6 +67,75 @@ interface Env {
   MYBROWSER: Fetcher;
   AGENTSCRAPE_SESSIONS: KVNamespace;
   GROQ_API_KEY: string;
+  CDP_API_KEY_ID: string;
+  CDP_API_KEY_SECRET: string;
+}
+
+// ----------------------------------------------------------------------------
+// CDP AUTH HELPER (Ed25519 JWT for Coinbase CDP Facilitator)
+// ----------------------------------------------------------------------------
+
+/**
+ * Convert CDP's raw base64 Ed25519 key (88 chars) to PKCS#8 PEM format
+ * required by the jose library.
+ *
+ * CDP gives us a 64-byte raw key (32-byte seed + 32-byte public key).
+ * We extract the first 32 bytes (seed) and wrap it in PKCS#8 structure:
+ *   - Prefix: 302e020100300506032b657004220420 (Ed25519 PKCS#8 ASN.1 header)
+ *   - Body:   first 32 bytes of decoded base64
+ */
+function toPKCS8Pem(rawBase64Key: string): string {
+  const raw = Uint8Array.from(atob(rawBase64Key), c => c.charCodeAt(0));
+  const seed = raw.slice(0, 32);
+  const prefixHex = "302e020100300506032b657004220420";
+  const prefix = new Uint8Array(prefixHex.match(/.{2}/g)!.map(b => parseInt(b, 16)));
+  const pkcs8 = new Uint8Array(prefix.length + seed.length);
+  pkcs8.set(prefix, 0);
+  pkcs8.set(seed, prefix.length);
+  const b64 = btoa(String.fromCharCode(...pkcs8));
+  const lines = b64.match(/.{1,64}/g)!.join("\n");
+  return `-----BEGIN PRIVATE KEY-----\n${lines}\n-----END PRIVATE KEY-----\n`;
+}
+
+/**
+ * Sign a CDP JWT for a given HTTP method + path.
+ * Used by createCDPAuthHeaders to authenticate verify/settle/supported calls.
+ */
+async function signCDPJWT(method: string, path: string, keyId: string, keySecret: string): Promise<string> {
+  const pem = toPKCS8Pem(keySecret);
+  const privateKey = await importPKCS8(pem, "EdDSA");
+  const uri = `${method} api.cdp.coinbase.com${path}`;
+  const nonceBytes = crypto.getRandomValues(new Uint8Array(16));
+  const nonce = Array.from(nonceBytes).map(b => b.toString(16).padStart(2, "0")).join("");
+  return await new SignJWT({ uri })
+    .setProtectedHeader({ alg: "EdDSA", kid: keyId, nonce })
+    .setIssuedAt()
+    .setExpirationTime("2m")
+    .setIssuer("cdp")
+    .setSubject(keyId)
+    .sign(privateKey);
+}
+
+/**
+ * Create the per-endpoint auth headers callback that @x402/core
+ * HTTPFacilitatorClient and agents/x402 withX402 both expect.
+ *
+ * Returns a closure that captures CDP credentials and generates fresh
+ * JWTs for each of verify/settle/supported endpoints.
+ */
+function createCDPAuthHeaders(keyId: string, keySecret: string) {
+  return async () => {
+    const [verifyJWT, settleJWT, supportedJWT] = await Promise.all([
+      signCDPJWT("POST", "/platform/v2/x402/verify", keyId, keySecret),
+      signCDPJWT("POST", "/platform/v2/x402/settle", keyId, keySecret),
+      signCDPJWT("GET",  "/platform/v2/x402/supported", keyId, keySecret),
+    ]);
+    return {
+      verify:    { Authorization: `Bearer ${verifyJWT}` },
+      settle:    { Authorization: `Bearer ${settleJWT}` },
+      supported: { Authorization: `Bearer ${supportedJWT}` },
+    };
+  };
 }
 
 interface ScrapeRequest {
@@ -678,7 +748,7 @@ function buildMcpServer(env: Env) {
   const server = withX402(baseServer, {
     network: NETWORK,
     recipient: PAY_TO,
-    facilitator: { url: FACILITATOR_URL },
+    facilitator: { url: FACILITATOR_URL, createAuthHeaders: createCDPAuthHeaders(env.CDP_API_KEY_ID, env.CDP_API_KEY_SECRET) },
   });
 
   server.paidTool(
@@ -855,7 +925,7 @@ function buildApp(env: Env) {
   });
 
   // x402-hono payment middleware (HTTP routes)
-  const facilitatorClient = new HTTPFacilitatorClient({ url: FACILITATOR_URL });
+  const facilitatorClient = new HTTPFacilitatorClient({ url: FACILITATOR_URL, createAuthHeaders: createCDPAuthHeaders(env.CDP_API_KEY_ID, env.CDP_API_KEY_SECRET) });
   const resourceServer = new x402ResourceServer(facilitatorClient)
     .register(NETWORK, new ExactEvmScheme());
 
