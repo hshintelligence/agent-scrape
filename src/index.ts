@@ -22,6 +22,7 @@ import { createMcpHandler } from "agents/mcp";
 import { withX402 } from "agents/x402";
 import { z } from "zod";
 import { SignJWT, importPKCS8 } from "jose";
+import { declareDiscoveryExtension, bazaarResourceServerExtension } from "@x402/extensions";
 
 // ----------------------------------------------------------------------------
 // CONFIG
@@ -308,7 +309,6 @@ async function groqExtract(
   const truncated = content.length > 60000 ? content.slice(0, 60000) : content;
 
   const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
@@ -927,17 +927,163 @@ function buildApp(env: Env) {
   // x402-hono payment middleware (HTTP routes)
   const facilitatorClient = new HTTPFacilitatorClient({ url: FACILITATOR_URL, createAuthHeaders: createCDPAuthHeaders(env.CDP_API_KEY_ID, env.CDP_API_KEY_SECRET) });
   const resourceServer = new x402ResourceServer(facilitatorClient)
-    .register(NETWORK, new ExactEvmScheme());
+    .register(NETWORK, new ExactEvmScheme())
+    .registerExtension(bazaarResourceServerExtension);
 
   app.use(
     paymentMiddleware(
       {
-        "POST /scrape": { accepts: { scheme: "exact", price: PRICING.scrape, network: NETWORK, payTo: PAY_TO }, description: "Scrape any URL to markdown/html/text/json" },
-        "POST /extract": { accepts: { scheme: "exact", price: PRICING.extract, network: NETWORK, payTo: PAY_TO }, description: "AI-powered structured extraction via Groq + Llama 4 Scout" },
-        "POST /screenshot": { accepts: { scheme: "exact", price: PRICING.screenshot, network: NETWORK, payTo: PAY_TO }, description: "PNG screenshot with viewport control (desktop/mobile/tablet)" },
-        "POST /metadata": { accepts: { scheme: "exact", price: PRICING.metadata, network: NETWORK, payTo: PAY_TO }, description: "Extract title, description, OG, Twitter cards, JSON-LD" },
-        "POST /workflow": { accepts: { scheme: "exact", price: PRICING.workflow, network: NETWORK, payTo: PAY_TO }, description: "Multi-step atomic execution" },
-        "POST /session": { accepts: { scheme: "exact", price: PRICING.session, network: NETWORK, payTo: PAY_TO }, description: "Create stateful browser session" },
+        "POST /scrape": {
+          accepts: { scheme: "exact", price: PRICING.scrape, network: NETWORK, payTo: PAY_TO },
+          description: "Scrape any URL to markdown/html/text/json",
+          mimeType: "application/json",
+          extensions: {
+            bazaar: declareDiscoveryExtension({
+              bodyType: "json",
+              input: { url: "https://example.com", format: "markdown" },
+              inputSchema: {
+                type: "object",
+                properties: {
+                  url: { type: "string", description: "URL to scrape" },
+                  format: { type: "string", enum: ["markdown", "html", "text", "json"], default: "markdown" },
+                  wait_for: { type: "string", description: "CSS selector to wait for" },
+                  wait_ms: { type: "number", description: "Milliseconds to wait after load" },
+                  viewport: { type: "string", enum: ["desktop", "mobile", "tablet"], default: "desktop" },
+                  session_id: { type: "string", description: "Reuse a stateful session" },
+                },
+                required: ["url"],
+              },
+              output: { example: { url: "https://example.com", format: "markdown", content: "# Example Domain\n...", fetched_at: "2026-05-24T12:00:00Z" } },
+            }),
+          },
+        },
+        "POST /extract": {
+          accepts: { scheme: "exact", price: PRICING.extract, network: NETWORK, payTo: PAY_TO },
+          description: "AI-powered structured extraction via Groq + Llama 4 Scout",
+          mimeType: "application/json",
+          extensions: {
+            bazaar: declareDiscoveryExtension({
+              bodyType: "json",
+              input: { url: "https://news.ycombinator.com", prompt: "Extract the top 10 stories with title, points, and author" },
+              inputSchema: {
+                type: "object",
+                properties: {
+                  url: { type: "string", description: "URL to extract from" },
+                  prompt: { type: "string", description: "Natural-language instruction for extraction" },
+                  schema: { type: "object", description: "Optional JSON schema to enforce output shape" },
+                  wait_for: { type: "string" },
+                  wait_ms: { type: "number" },
+                  session_id: { type: "string" },
+                },
+                required: ["url", "prompt"],
+              },
+              output: { example: { url: "https://news.ycombinator.com", data: [{ title: "...", points: 1234, author: "..." }] } },
+            }),
+          },
+        },
+        "POST /screenshot": {
+          accepts: { scheme: "exact", price: PRICING.screenshot, network: NETWORK, payTo: PAY_TO },
+          description: "PNG screenshot with viewport control (desktop/mobile/tablet)",
+          mimeType: "application/json",
+          extensions: {
+            bazaar: declareDiscoveryExtension({
+              bodyType: "json",
+              input: { url: "https://example.com", viewport: "desktop", full_page: false },
+              inputSchema: {
+                type: "object",
+                properties: {
+                  url: { type: "string" },
+                  full_page: { type: "boolean", default: false },
+                  viewport: { type: "string", enum: ["desktop", "mobile", "tablet"], default: "desktop" },
+                  wait_for: { type: "string" },
+                  wait_ms: { type: "number" },
+                },
+                required: ["url"],
+              },
+              output: { example: { url: "https://example.com", image_base64: "iVBORw0KGgo...", viewport: "desktop", full_page: false } },
+            }),
+          },
+        },
+        "POST /metadata": {
+          accepts: { scheme: "exact", price: PRICING.metadata, network: NETWORK, payTo: PAY_TO },
+          description: "Extract title, description, OG, Twitter cards, JSON-LD",
+          mimeType: "application/json",
+          extensions: {
+            bazaar: declareDiscoveryExtension({
+              bodyType: "json",
+              input: { url: "https://example.com" },
+              inputSchema: {
+                type: "object",
+                properties: { url: { type: "string" } },
+                required: ["url"],
+              },
+              output: { example: { url: "https://example.com", title: "Example", description: "An example domain", og: {}, twitter: {}, json_ld: [] } },
+            }),
+          },
+        },
+        "POST /workflow": {
+          accepts: { scheme: "exact", price: PRICING.workflow, network: NETWORK, payTo: PAY_TO },
+          description: "Multi-step atomic browser workflow (navigate, click, type, wait, extract, screenshot, evaluate)",
+          mimeType: "application/json",
+          extensions: {
+            bazaar: declareDiscoveryExtension({
+              bodyType: "json",
+              input: {
+                steps: [
+                  { action: "navigate", url: "https://example.com" },
+                  { action: "wait_for", selector: "h1" },
+                  { action: "extract", format: "markdown" },
+                ],
+              },
+              inputSchema: {
+                type: "object",
+                properties: {
+                  steps: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        action: { type: "string", enum: ["navigate", "click", "type", "wait_for", "wait_ms", "scroll", "screenshot", "extract", "extract_ai", "evaluate"] },
+                        url: { type: "string" },
+                        selector: { type: "string" },
+                        text: { type: "string" },
+                        ms: { type: "number" },
+                        full_page: { type: "boolean" },
+                        prompt: { type: "string" },
+                        script: { type: "string" },
+                        format: { type: "string", enum: ["markdown", "html", "text"] },
+                      },
+                      required: ["action"],
+                    },
+                  },
+                  session_id: { type: "string" },
+                  persist_session: { type: "boolean" },
+                  viewport: { type: "string", enum: ["desktop", "mobile", "tablet"] },
+                },
+                required: ["steps"],
+              },
+              output: { example: { results: [{ step: 0, action: "navigate", ok: true }, { step: 2, action: "extract", ok: true, content: "..." }] } },
+            }),
+          },
+        },
+        "POST /session": {
+          accepts: { scheme: "exact", price: PRICING.session, network: NETWORK, payTo: PAY_TO },
+          description: "Create a stateful browser session that persists cookies and localStorage across calls",
+          mimeType: "application/json",
+          extensions: {
+            bazaar: declareDiscoveryExtension({
+              bodyType: "json",
+              input: { ttl_seconds: 3600 },
+              inputSchema: {
+                type: "object",
+                properties: {
+                  ttl_seconds: { type: "number", description: "Session TTL in seconds (default 3600, max 86400)", default: 3600 },
+                },
+              },
+              output: { example: { session_id: "sess_abc123", expires_at: "2026-05-24T13:00:00Z" } },
+            }),
+          },
+        },
       },
       resourceServer,
     ),
