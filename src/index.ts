@@ -899,6 +899,20 @@ function buildApp(env: Env) {
     });
   });
 
+  // MCP preflight (CORS for browser-based agents incl. x402 payment headers)
+  app.options("/mcp", (c) => {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Accept, Authorization, X-Payment, Payment-Signature, Payment-Required, mcp-session-id, MCP-Protocol-Version",
+        "Access-Control-Expose-Headers": "Payment-Required, Payment-Response, mcp-session-id",
+        "Access-Control-Max-Age": "86400",
+      },
+    });
+  });
+
   // MCP endpoint — delegate to createMcpHandler
   app.all("/mcp", async (c) => {
     const mcpServer = buildMcpServer(c.env);
