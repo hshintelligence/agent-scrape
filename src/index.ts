@@ -924,8 +924,8 @@ function buildApp(env: Env) {
   // Discovery endpoints (free, before payment middleware)
   // -----------------------------------------------------------------------
 
-  // x402 manifest at /.well-known/x402 — standard agent discovery alias
-  app.get("/.well-known/x402", (c) => {
+  // x402 manifest at /.well-known/x402 + /.well-known/x402.json — standard agent discovery aliases
+  const x402Manifest = (c: Context<{ Bindings: Env }>) => {
     const baseUrl = new URL(c.req.url).origin;
     return c.json({
       x402Version: 2,
@@ -945,7 +945,9 @@ function buildApp(env: Env) {
       mcp: { endpoint: `${baseUrl}/mcp`, transport: "streamable-http" },
       free_tier: { limit_per_wallet: FREE_TIER_LIMIT, window_days: 30 },
     });
-  });
+  };
+  app.get("/.well-known/x402", x402Manifest);
+  app.get("/.well-known/x402.json", x402Manifest);
 
   // OpenAPI 3.1 spec for traditional tooling discovery
   app.get("/openapi.json", (c) => {
