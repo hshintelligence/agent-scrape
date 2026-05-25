@@ -949,6 +949,14 @@ function buildApp(env: Env) {
   app.get("/.well-known/x402", x402Manifest);
   app.get("/.well-known/x402.json", x402Manifest);
 
+  // Glama ownership verification — proves we operate this MCP server
+  app.get("/.well-known/glama.json", (c) => {
+    return c.json({
+      $schema: "https://glama.ai/mcp/schemas/connector.json",
+      maintainers: [{ email: "contact@healingsunhaven.com" }],
+    });
+  });
+
   // OpenAPI 3.1 spec for traditional tooling discovery
   app.get("/openapi.json", (c) => {
     const baseUrl = new URL(c.req.url).origin;
