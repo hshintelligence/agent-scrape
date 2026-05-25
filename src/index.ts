@@ -906,6 +906,172 @@ function buildApp(env: Env) {
     return handler(c.req.raw, c.env as any, c.executionCtx as any);
   });
 
+  // -----------------------------------------------------------------------
+  // Discovery endpoints (free, before payment middleware)
+  // -----------------------------------------------------------------------
+
+  // x402 manifest at /.well-known/x402 — standard agent discovery alias
+  app.get("/.well-known/x402", (c) => {
+    const baseUrl = new URL(c.req.url).origin;
+    return c.json({
+      x402Version: 2,
+      service: "AgentScrape",
+      description: "Pay-per-call web scraping for AI agents on Base USDC",
+      payTo: PAY_TO,
+      network: NETWORK,
+      facilitator: FACILITATOR_URL,
+      routes: [
+        { method: "POST", path: "/scrape",     url: `${baseUrl}/scrape`,     price: PRICING.scrape,     asset: "USDC", description: "Scrape any URL to markdown/html/text/json" },
+        { method: "POST", path: "/extract",    url: `${baseUrl}/extract`,    price: PRICING.extract,    asset: "USDC", description: "AI-powered structured extraction via Groq Llama 4 Scout" },
+        { method: "POST", path: "/screenshot", url: `${baseUrl}/screenshot`, price: PRICING.screenshot, asset: "USDC", description: "PNG screenshot with viewport control" },
+        { method: "POST", path: "/metadata",   url: `${baseUrl}/metadata`,   price: PRICING.metadata,   asset: "USDC", description: "Extract title, OG, Twitter cards, JSON-LD" },
+        { method: "POST", path: "/workflow",   url: `${baseUrl}/workflow`,   price: PRICING.workflow,   asset: "USDC", description: "Multi-step atomic browser workflow" },
+        { method: "POST", path: "/session",    url: `${baseUrl}/session`,    price: PRICING.session,    asset: "USDC", description: "Stateful browser session" },
+      ],
+      mcp: { endpoint: `${baseUrl}/mcp`, transport: "streamable-http" },
+      free_tier: { limit_per_wallet: FREE_TIER_LIMIT, window_days: 30 },
+    });
+  });
+
+  // OpenAPI 3.1 spec for traditional tooling discovery
+  app.get("/openapi.json", (c) => {
+    const baseUrl = new URL(c.req.url).origin;
+    const paidRoute = (price: string, summary: string) => ({
+      post: {
+        summary,
+        responses: {
+          "200": { description: "Success", content: { "application/json": { schema: { type: "object" } } } },
+          "402": { description: `Payment Required (${price} USDC on Base)`, headers: { "Payment-Required": { schema: { type: "string", description: "Base64-encoded x402 v2 payment requirements" } } } },
+        },
+        requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } },
+      },
+    });
+    return c.json({
+      openapi: "3.1.0",
+      info: {
+        title: "AgentScrape",
+        version: VERSION,
+        description: "Pay-per-call web scraping for AI agents. USDC on Base. No signup, no API keys.",
+        contact: { name: "HSH Intelligence", url: "https://github.com/hshintelligence/agent-scrape" },
+        license: { name: "MIT" },
+      },
+      servers: [{ url: baseUrl }],
+      paths: {
+        "/scrape":     paidRoute(PRICING.scrape,     "Scrape any URL to markdown/html/text/json"),
+        "/extract":    paidRoute(PRICING.extract,    "AI-powered structured extraction"),
+        "/screenshot": paidRoute(PRICING.screenshot, "PNG screenshot with viewport control"),
+        "/metadata":   paidRoute(PRICING.metadata,   "Extract title, OG, Twitter, JSON-LD"),
+        "/workflow":   paidRoute(PRICING.workflow,   "Multi-step atomic browser workflow"),
+        "/session":    paidRoute(PRICING.session,    "Stateful browser session"),
+      },
+    });
+  });
+
+  // Agent-friendly plaintext description
+  app.get("/llms.txt", (c) => {
+    const baseUrl = new URL(c.req.url).origin;
+    const body = `# AgentScrape
+
+Pay-per-call web scraping for AI agents. USDC on Base. No signup, no API keys.
+
+## Payment
+
+- Network: ${NETWORK}
+- Pay to: ${PAY_TO}
+- Facilitator: ${FACILITATOR_URL}
+- Protocol: x402 v2 (HTTP 402 + base64 Payment-Required header)
+
+## Endpoints (all POST, all paid via x402)
+
+- ${baseUrl}/scrape     - ${PRICING.scrape}     - Scrape any URL to markdown/html/text/json
+- ${baseUrl}/extract    - ${PRICING.extract}    - AI-powered structured extraction (Groq + Llama 4 Scout)
+- ${baseUrl}/screenshot - ${PRICING.screenshot} - PNG screenshot with viewport control
+- ${baseUrl}/metadata   - ${PRICING.metadata}   - Extract title, OG, Twitter, JSON-LD
+- ${baseUrl}/workflow   - ${PRICING.workflow}   - Multi-step atomic browser workflow
+- ${baseUrl}/session    - ${PRICING.session}    - Stateful browser session
+
+## MCP
+
+- ${baseUrl}/mcp (Streamable HTTP)
+- Tools: scrape_webpage, extract_structured_data, screenshot_webpage, extract_metadata, create_browser_session, run_workflow
+
+## Free tier
+
+- ${FREE_TIER_LIMIT} requests per wallet per 30 days (sent via X-402-Payer header)
+
+## Discovery
+
+- /.well-known/x402 (machine-readable manifest)
+- /openapi.json (OpenAPI 3.1)
+- This file (/llms.txt)
+
+## Source
+
+https://github.com/hshintelligence/agent-scrape (MIT)
+`;
+    return new Response(body, { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=300" } });
+  });
+
+  // Global CORS preflight (OPTIONS) for browser-based agents
+  app.options("*", (c) => {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Payment, Payment-Required, X-402-Payer",
+        "Access-Control-Expose-Headers": "Payment-Required, X-402-Payer, X-Free-Tier-Remaining, X-Free-Tier-Wallet",
+        "Access-Control-Max-Age": "86400",
+      },
+    });
+  });
+
+  // CORS + cache-control + helpful 402 body (browser agents + proxy correctness + human debuggability)
+  app.use("*", async (c, next) => {
+    await next();
+    c.res.headers.set("Access-Control-Allow-Origin", "*");
+    c.res.headers.set("Access-Control-Expose-Headers", "Payment-Required, X-402-Payer, X-Free-Tier-Remaining, X-Free-Tier-Wallet");
+
+    // x402 v2: payment data lives in the PAYMENT-REQUIRED header (canonical).
+    // The body is freed up for human-readable error details and docs links
+    // (per Coinbase x402 v2 launch announcement, Dec 11 2025).
+    if (c.res.status === 402) {
+      c.res.headers.set("Cache-Control", "private, no-store");
+      c.res.headers.set("Pragma", "no-cache");
+
+      // Only enrich if the body is empty / minimal — never overwrite a meaningful body
+      try {
+        const cloned = c.res.clone();
+        const text = await cloned.text();
+        const trimmed = text.trim();
+        if (trimmed === "" || trimmed === "{}") {
+          const baseUrl = new URL(c.req.url).origin;
+          const path = c.req.path;
+          const body = {
+            error: "payment_required",
+            message: "This endpoint requires an x402 payment to proceed. The payment requirements are in the 'payment-required' response header (base64-encoded JSON, x402 v2).",
+            endpoint: path,
+            protocol: "x402 v2",
+            payment_header: "payment-required",
+            instructions: "Decode the 'payment-required' header, sign a payment payload matching one of the accepted requirements, and retry your request with a 'payment-signature' header.",
+            discovery: {
+              manifest: `${baseUrl}/.well-known/x402`,
+              openapi: `${baseUrl}/openapi.json`,
+              llms_txt: `${baseUrl}/llms.txt`,
+            },
+            docs: "https://github.com/hshintelligence/agent-scrape",
+            spec: "https://docs.x402.org",
+          };
+          const newHeaders = new Headers(c.res.headers);
+          newHeaders.set("Content-Type", "application/json");
+          c.res = new Response(JSON.stringify(body), { status: 402, headers: newHeaders });
+        }
+      } catch {
+        // If anything goes wrong reading the body, leave the original response untouched
+      }
+    }
+  });
+
   // Free-tier short-circuit (HTTP API only — MCP has its own payment flow via withX402)
   app.use("*", async (c, next) => {
     const path = c.req.path;
@@ -1097,7 +1263,7 @@ function buildApp(env: Env) {
   app.post("/workflow", handleWorkflow);
   app.post("/session", handleSession);
 
-  app.notFound((c) => c.json({ error: "Not Found", available_endpoints: ["GET /", "POST /mcp", "POST /scrape", "POST /extract", "POST /screenshot", "POST /metadata", "POST /workflow", "POST /session"] }, 404));
+  app.notFound((c) => c.json({ error: "Not Found", available_endpoints: ["GET /", "GET /.well-known/x402", "GET /openapi.json", "GET /llms.txt", "POST /mcp", "POST /scrape", "POST /extract", "POST /screenshot", "POST /metadata", "POST /workflow", "POST /session"] }, 404));
 
   app.onError((err, c) => {
     console.error("Worker error:", err);
