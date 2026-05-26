@@ -1,0 +1,46 @@
+{
+  "$schema": "https://hshintelligence.com/schemas/hsh-service.json",
+  "id": "{{SVC_ID}}",
+  "name": "{{SVC_NAME}}",
+  "org": "HSH Intelligence",
+  "tagline": "{{SVC_TAGLINE}}",
+  "description": "{{SVC_DESCRIPTION}}",
+  "category": "{{SVC_CATEGORY}}",
+  "version": "0.1.0",
+  "status": "live",
+  "license": "MIT",
+  "endpoints": {
+    "primary": "https://{{SVC_ID}}.healingsunhaven.workers.dev",
+    "mcp": "https://{{SVC_ID}}.healingsunhaven.workers.dev/mcp",
+    "x402_manifest": "https://{{SVC_ID}}.healingsunhaven.workers.dev/.well-known/x402.json",
+    "a2a_card": "https://{{SVC_ID}}.healingsunhaven.workers.dev/.well-known/agent.json",
+    "schema_org": "https://{{SVC_ID}}.healingsunhaven.workers.dev/schema.json",
+    "openapi": "https://{{SVC_ID}}.healingsunhaven.workers.dev/openapi.json",
+    "llms_txt": "https://{{SVC_ID}}.healingsunhaven.workers.dev/llms.txt"
+  },
+  "github": "https://github.com/hshintelligence/{{SVC_ID}}",
+  "payment": {
+    "protocol": "x402",
+    "version": 2,
+    "network": "base",
+    "chain_id": "eip155:8453",
+    "asset": "USDC",
+    "asset_contract": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "pay_to": "0x3F3337295fea3613A5f128a8E834A0dca30f9E9a",
+    "facilitator": "https://api.cdp.coinbase.com/platform/v2/x402"
+  },
+  "free_tier": { "limit_per_wallet": 10, "window_days": 30 },
+  "tools": [],
+  "broadcast_targets": [
+    "mcp:glama", "mcp:smithery", "mcp:mcp.so",
+    "x402:bazaar", "x402:agentic.market",
+    "a2a:agent-card",
+    "discovery:dns-aid", "discovery:well-known", "discovery:ipfs",
+    "social:moltbook", "social:farcaster", "social:x-twitter",
+    "chain:eas-base", "chain:ens",
+    "registry:awesome-mcp-servers", "registry:awesome-x402"
+  ],
+  "ipfs": { "manifest_cid": null, "pinned_at": null, "pinned_via": "pinata" },
+  "social_handles": { "twitter": "", "farcaster": "", "github_org": "hshintelligence" },
+  "contact": "contact@healingsunhaven.com"
+}
