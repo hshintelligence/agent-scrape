@@ -1,0 +1,9 @@
+{
+  "$schema": "https://glama.ai/mcp/schemas/server.json",
+  "maintainers": ["contact@healingsunhaven.com"],
+  "transport": "streamable-http",
+  "endpoint": "https://agent-scrape.healingsunhaven.workers.dev/mcp",
+  "description": "Pay-per-call web scraping for AI agents. USDC micropayments on Base via x402 protocol. No signup, no API keys.",
+  "categories": ["web-scraping", "browser-automation", "data-extraction", "ai-tools"],
+  "license": "MIT"
+}
