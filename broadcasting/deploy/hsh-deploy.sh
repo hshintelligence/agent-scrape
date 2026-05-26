@@ -67,6 +67,11 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HETZNER_HOST="root@204.168.244.106"
 HSH_ORG="hshintelligence"
 GH_REPO="${HSH_ORG}/${SVC_ID}"
+
+# Resolve GitHub-noreply email for commit author (avoids email-privacy push rejection)
+GH_USER_LOGIN=$(gh api user --jq '.login' 2>/dev/null || echo "hshintelligence")
+GH_USER_ID=$(gh api user --jq '.id' 2>/dev/null || echo "0")
+COMMIT_EMAIL="${GH_USER_ID}+${GH_USER_LOGIN}@users.noreply.github.com"
 WORKER_URL="https://${SVC_ID}.healingsunhaven.workers.dev"
 TMP_DIR="$(mktemp -d)"
 trap "rm -rf $TMP_DIR" EXIT
@@ -87,8 +92,17 @@ echo ""
 # ============================================================
 need() { command -v "$1" >/dev/null 2>&1 || { echo "✗ missing: $1"; exit 1; }; }
 need gh
-need wrangler
 need git
+
+# wrangler: prefer global, fall back to npx (Cloudflare CLI is often project-local)
+if command -v wrangler >/dev/null 2>&1; then
+  WRANGLER_CMD="wrangler"
+elif command -v npx >/dev/null 2>&1; then
+  WRANGLER_CMD="npx --yes wrangler@latest"
+  echo "  • Using npx wrangler (no global install detected)"
+else
+  echo "✗ missing: wrangler (and npx not available either)"; exit 1
+fi
 need curl
 need ssh
 need rsync
@@ -195,7 +209,7 @@ GIEOF
 echo "[4/15] Installing dependencies + committing..."
 npm install --silent 2>&1 | tail -3 || echo "  (npm install will run later)"
 git add -A
-git -c user.email="contact@healingsunhaven.com" -c user.name="HSH Intelligence" commit -m "feat: initial $SVC_NAME service from HSH lighthouse template
+git -c user.email="$COMMIT_EMAIL" -c user.name="HSH Intelligence" commit -m "feat: initial $SVC_NAME service from HSH lighthouse template
 
 Auto-provisioned by hsh-deploy. Ships all 8 per-service broadcast layers:
 - A2A Agent Card
@@ -216,7 +230,7 @@ echo "  ✓ Pushed initial commit"
 # STEP 5 — Deploy Worker to Cloudflare
 # ============================================================
 echo "[5/15] Deploying Worker to Cloudflare..."
-wrangler deploy 2>&1 | tail -4
+$WRANGLER_CMD deploy 2>&1 | tail -4
 echo "  ✓ Worker deployed at $WORKER_URL"
 
 # ============================================================
