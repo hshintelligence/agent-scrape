@@ -1,0 +1,22 @@
+{
+  "name": "hsh-broadcasting-tower",
+  "version": "0.1.0",
+  "description": "HSH Intelligence Broadcasting Tower — multi-tenant 24/7 broadcaster for agent-native services",
+  "type": "module",
+  "main": "src/daemon.js",
+  "scripts": {
+    "start": "node src/daemon.js",
+    "dev": "node --watch src/daemon.js",
+    "broadcast:once": "node src/broadcast-once.js",
+    "health": "curl -s http://localhost:3000/health | python3 -m json.tool"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "node-cron": "^3.0.3",
+    "pino": "^9.5.0",
+    "pino-pretty": "^11.3.0"
+  },
+  "engines": { "node": ">=20.0.0" },
+  "author": "HSH Intelligence <contact@healingsunhaven.com>",
+  "license": "MIT"
+}

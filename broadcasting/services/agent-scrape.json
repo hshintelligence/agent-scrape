@@ -1,0 +1,66 @@
+{
+  "$schema": "https://hshintelligence.com/schemas/hsh-service.json",
+  "id": "agent-scrape",
+  "name": "AgentScrape",
+  "org": "HSH Intelligence",
+  "tagline": "Pay-per-call web scraping for AI agents",
+  "description": "Pay-per-call web scraping for AI agents via x402 v2 on Base USDC. No signup, no API keys.",
+  "category": "web-scraping",
+  "version": "0.6.1",
+  "status": "live",
+  "license": "MIT",
+  "endpoints": {
+    "primary": "https://agent-scrape.healingsunhaven.workers.dev",
+    "mcp": "https://agent-scrape.healingsunhaven.workers.dev/mcp",
+    "x402_manifest": "https://agent-scrape.healingsunhaven.workers.dev/.well-known/x402.json",
+    "a2a_card": "https://agent-scrape.healingsunhaven.workers.dev/.well-known/agent.json",
+    "openapi": "https://agent-scrape.healingsunhaven.workers.dev/openapi.json",
+    "llms_txt": "https://agent-scrape.healingsunhaven.workers.dev/llms.txt"
+  },
+  "github": "https://github.com/hshintelligence/agent-scrape",
+  "payment": {
+    "protocol": "x402",
+    "version": 2,
+    "network": "base",
+    "chain_id": "eip155:8453",
+    "asset": "USDC",
+    "asset_contract": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "pay_to": "0x3F3337295fea3613A5f128a8E834A0dca30f9E9a",
+    "facilitator": "https://api.cdp.coinbase.com/platform/v2/x402"
+  },
+  "free_tier": { "limit_per_wallet": 10, "window_days": 30 },
+  "tools": [
+    { "id": "scrape_webpage",          "price": "0.003" },
+    { "id": "extract_structured_data", "price": "0.005" },
+    { "id": "screenshot_webpage",      "price": "0.003" },
+    { "id": "extract_metadata",        "price": "0.002" },
+    { "id": "create_browser_session",  "price": "0.001" },
+    { "id": "run_workflow",            "price": "0.008" }
+  ],
+  "current_pricing_mode": "validation_flat_0.001",
+  "broadcast_targets": [
+    "mcp:glama", "mcp:smithery", "mcp:mcp.so", "mcp:pulsemcp", "mcp:skillsindex",
+    "x402:bazaar", "x402:agentic.market",
+    "a2a:agent-card",
+    "discovery:dns-aid", "discovery:well-known", "discovery:ipfs",
+    "framework:elizaos", "framework:agentkit", "framework:langchain", "framework:openclaw",
+    "social:moltbook", "social:farcaster", "social:x-twitter", "social:lens",
+    "chain:eas-base", "chain:ens", "chain:story-protocol",
+    "registry:awesome-mcp-servers", "registry:awesome-mcp-list", "registry:awesome-x402"
+  ],
+  "ipfs": {
+    "manifest_cid": "QmWFWxeWCFeuxFtrdxLCjbUseMbmTK5QHdHV7CZ53p5eZA",
+    "gateways": [
+      "https://gateway.pinata.cloud/ipfs/QmWFWxeWCFeuxFtrdxLCjbUseMbmTK5QHdHV7CZ53p5eZA",
+      "https://ipfs.io/ipfs/QmWFWxeWCFeuxFtrdxLCjbUseMbmTK5QHdHV7CZ53p5eZA"
+    ],
+    "pinned_at": "2026-05-26T12:45:58.004Z",
+    "pinned_via": "pinata"
+  },
+  "social_handles": {
+    "twitter": "@AgentScrape",
+    "farcaster": "agentscrape",
+    "github_org": "hshintelligence"
+  },
+  "contact": "contact@healingsunhaven.com"
+}
