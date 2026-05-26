@@ -868,7 +868,7 @@ function buildApp(env: Env) {
 
   // Service identity (free)
   app.get("/", (c) => {
-    c.header("Link", `<${new URL(c.req.url).origin}/schema.json>; rel="describedby"; type="application/ld+json", <${new URL(c.req.url).origin}/.well-known/agent.json>; rel="alternate"; type="application/json", <${new URL(c.req.url).origin}/.well-known/x402.json>; rel="payment"; type="application/json"`);
+    c.header("Link", `<${new URL(c.req.url).origin}/schema.json>; rel="describedby"; type="application/ld+json", <${new URL(c.req.url).origin}/.well-known/agent.json>; rel="alternate"; type="application/json", <${new URL(c.req.url).origin}/.well-known/x402.json>; rel="payment"; type="application/json", <${new URL(c.req.url).origin}/services.json>; rel="related"; type="application/json"`);
     return c.json({
       service: "AgentScrape",
       tagline: "Pay-per-call web scraping for AI agents — no signup, no API keys, just USDC",
@@ -1008,6 +1008,40 @@ function buildApp(env: Env) {
         { "@type": "PropertyValue", "name": "freeTierCalls",   "value": String(FREE_TIER_LIMIT) }
       ]
     });
+  });
+
+  // HSH services catalog — proxies broadcasting.hshintelligence.com so any agent
+  // discovering AgentScrape learns about all current and future HSH services
+  // in one fetch. Multi-tenant: future HSH services drop in via services/*.json
+  // on Hetzner without redeploying this Worker.
+  app.get("/services.json", async (c) => {
+    try {
+      const upstream = await fetch("https://broadcasting.hshintelligence.com/services", {
+        cf: { cacheTtl: 60, cacheEverything: true },
+      });
+      const data = await upstream.json();
+      return c.json({
+        org: "HSH Intelligence",
+        contact: "contact@healingsunhaven.com",
+        github: "https://github.com/hshintelligence",
+        broadcasting_tower: "https://broadcasting.hshintelligence.com",
+        fetched_at: new Date().toISOString(),
+        count: Array.isArray(data) ? data.length : 0,
+        services: data,
+      }, 200, {
+        "Cache-Control": "public, max-age=60, s-maxage=60",
+        "Access-Control-Allow-Origin": "*",
+      });
+    } catch (err) {
+      return c.json({
+        error: "upstream_unavailable",
+        message: "HSH broadcasting tower temporarily unreachable",
+        org: "HSH Intelligence",
+        fallback: {
+          services: [{ id: "agent-scrape", name: "AgentScrape", url: "https://agent-scrape.healingsunhaven.workers.dev" }],
+        },
+      }, 200);
+    }
   });
 
   // ai-plugin.json — legacy OpenAI/ChatGPT plugin discovery, still widely indexed
@@ -1433,7 +1467,7 @@ https://github.com/hshintelligence/agent-scrape (MIT)
   app.post("/workflow", handleWorkflow);
   app.post("/session", handleSession);
 
-  app.notFound((c) => c.json({ error: "Not Found", available_endpoints: ["GET /", "GET /.well-known/x402", "GET /.well-known/agent.json", "GET /.well-known/ai-plugin.json", "GET /.well-known/security.txt", "GET /schema.json", "GET /humans.txt", "GET /openapi.json", "GET /llms.txt", "POST /mcp", "POST /scrape", "POST /extract", "POST /screenshot", "POST /metadata", "POST /workflow", "POST /session"] }, 404));
+  app.notFound((c) => c.json({ error: "Not Found", available_endpoints: ["GET /", "GET /.well-known/x402", "GET /.well-known/agent.json", "GET /.well-known/ai-plugin.json", "GET /.well-known/security.txt", "GET /schema.json", "GET /humans.txt", "GET /services.json", "GET /openapi.json", "GET /llms.txt", "POST /mcp", "POST /scrape", "POST /extract", "POST /screenshot", "POST /metadata", "POST /workflow", "POST /session"] }, 404));
 
   app.onError((err, c) => {
     console.error("Worker error:", err);
