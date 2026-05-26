@@ -7,7 +7,8 @@
     "dev": "wrangler dev",
     "start": "wrangler dev",
     "test": "vitest",
-    "cf-typegen": "wrangler types"
+    "cf-typegen": "wrangler types",
+    "glama-start": "wrangler dev --ip 0.0.0.0 --port 8787 --remote & sleep 10 && mcp-proxy http://localhost:8787/mcp"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.12.4",
