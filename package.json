@@ -8,7 +8,9 @@
     "start": "wrangler dev",
     "test": "vitest",
     "cf-typegen": "wrangler types",
-    "glama-start": "wrangler dev --ip 0.0.0.0 --port 8787 & sleep 15 && mcp-proxy --transport streamable-http http://localhost:8787/mcp"
+    "glama-start": "node dist/stdio.js",
+    "build:stdio": "tsc -p tsconfig.stdio.json",
+    "start:stdio": "node dist/stdio.js"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.12.4",
@@ -28,5 +30,6 @@
     "hono": "^4.12.22",
     "jose": "^6.2.3",
     "zod": "^4.4.3"
-  }
+  },
+  "type": "module"
 }
