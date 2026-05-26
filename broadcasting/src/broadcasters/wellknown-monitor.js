@@ -1,7 +1,7 @@
-// wellknown-monitor.js — pings all discovery endpoints every 15 min and logs status
+// wellknown-monitor.js — pings discovery endpoints every 15 min and logs to ring buffer
 import { logger } from '../lib/logger.js';
+import { logBroadcast } from '../lib/broadcast-log.js';
 
-// per-endpoint Accept headers; MCP Streamable HTTP requires SSE-compatible Accept
 const ENDPOINT_HEADERS = {
   primary:       { Accept: 'application/json' },
   mcp:           { Accept: 'application/json, text/event-stream' },
@@ -25,11 +25,29 @@ export async function broadcastWellKnown(services) {
           headers: { 'User-Agent': 'HSH-Broadcasting-Tower/0.1', ...ENDPOINT_HEADERS[key] },
         });
         const ms = Date.now() - t0;
-        // MCP returns 200 OR 405 (method not allowed for GET) when alive — both are healthy signals
         const healthy = r.ok || (key === 'mcp' && r.status === 405);
+        logBroadcast({
+          worker: 'wellknown-monitor',
+          svc: svc.id,
+          endpoint: key,
+          url,
+          status: r.status,
+          ms,
+          healthy,
+        });
         if (healthy) log.info({ svc: svc.id, endpoint: key, status: r.status, ms }, 'discovery endpoint healthy');
         else log.warn({ svc: svc.id, endpoint: key, status: r.status, ms }, 'discovery endpoint returned non-2xx');
       } catch (err) {
+        logBroadcast({
+          worker: 'wellknown-monitor',
+          svc: svc.id,
+          endpoint: key,
+          url,
+          status: 0,
+          ms: Date.now() - t0,
+          healthy: false,
+          error: err.message,
+        });
         log.error({ svc: svc.id, endpoint: key, err: err.message }, 'discovery endpoint UNREACHABLE');
       }
     }

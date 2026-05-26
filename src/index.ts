@@ -1010,6 +1010,28 @@ function buildApp(env: Env) {
     });
   });
 
+  // HSH broadcasts log — proxies broadcasting.hshintelligence.com/broadcasts so
+  // any agent or developer can verify the lighthouse is alive 24/7. Trust signal.
+  app.get("/broadcasts.json", async (c) => {
+    try {
+      const upstream = await fetch("https://broadcasting.hshintelligence.com/broadcasts", {
+        cf: { cacheTtl: 30, cacheEverything: true },
+      });
+      const data = await upstream.json();
+      return c.json(data, 200, {
+        "Cache-Control": "public, max-age=30, s-maxage=30",
+        "Access-Control-Allow-Origin": "*",
+      });
+    } catch (err) {
+      return c.json({
+        error: "upstream_unavailable",
+        message: "HSH broadcasting tower temporarily unreachable",
+        org: "HSH Intelligence",
+        tower: "https://broadcasting.hshintelligence.com",
+      }, 200);
+    }
+  });
+
   // HSH services catalog — proxies broadcasting.hshintelligence.com so any agent
   // discovering AgentScrape learns about all current and future HSH services
   // in one fetch. Multi-tenant: future HSH services drop in via services/*.json
@@ -1467,7 +1489,7 @@ https://github.com/hshintelligence/agent-scrape (MIT)
   app.post("/workflow", handleWorkflow);
   app.post("/session", handleSession);
 
-  app.notFound((c) => c.json({ error: "Not Found", available_endpoints: ["GET /", "GET /.well-known/x402", "GET /.well-known/agent.json", "GET /.well-known/ai-plugin.json", "GET /.well-known/security.txt", "GET /schema.json", "GET /humans.txt", "GET /services.json", "GET /openapi.json", "GET /llms.txt", "POST /mcp", "POST /scrape", "POST /extract", "POST /screenshot", "POST /metadata", "POST /workflow", "POST /session"] }, 404));
+  app.notFound((c) => c.json({ error: "Not Found", available_endpoints: ["GET /", "GET /.well-known/x402", "GET /.well-known/agent.json", "GET /.well-known/ai-plugin.json", "GET /.well-known/security.txt", "GET /schema.json", "GET /humans.txt", "GET /broadcasts.json", "GET /services.json", "GET /openapi.json", "GET /llms.txt", "POST /mcp", "POST /scrape", "POST /extract", "POST /screenshot", "POST /metadata", "POST /workflow", "POST /session"] }, 404));
 
   app.onError((err, c) => {
     console.error("Worker error:", err);

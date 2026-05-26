@@ -1,6 +1,5 @@
-// ipfs-refresh.js — re-pins each service's x402 manifest to IPFS every 6 hours
-// keeps Pinata replication fresh + content-addressed identity stable
 import { logger } from '../lib/logger.js';
+import { logBroadcast } from '../lib/broadcast-log.js';
 
 export async function refreshIpfsPins(services) {
   const log = logger.child({ worker: 'ipfs-refresh' });
@@ -9,6 +8,7 @@ export async function refreshIpfsPins(services) {
 
   for (const svc of services) {
     if (!svc.endpoints?.x402_manifest) continue;
+    const t0 = Date.now();
     try {
       const manifest = await fetch(svc.endpoints.x402_manifest).then(r => r.text());
       const fd = new FormData();
@@ -21,9 +21,13 @@ export async function refreshIpfsPins(services) {
         method: 'POST', headers: { 'Authorization': `Bearer ${jwt}` }, body: fd,
       });
       const result = await r.json();
-      if (result.IpfsHash) log.info({ svc: svc.id, cid: result.IpfsHash, size: result.PinSize }, 'IPFS pin refreshed');
+      const ms = Date.now() - t0;
+      const healthy = !!result.IpfsHash;
+      logBroadcast({ worker: 'ipfs-refresh', svc: svc.id, cid: result.IpfsHash || null, size: result.PinSize || null, ms, healthy });
+      if (healthy) log.info({ svc: svc.id, cid: result.IpfsHash, size: result.PinSize }, 'IPFS pin refreshed');
       else log.error({ svc: svc.id, result }, 'IPFS pin failed');
     } catch (err) {
+      logBroadcast({ worker: 'ipfs-refresh', svc: svc.id, ms: Date.now() - t0, healthy: false, error: err.message });
       log.error({ svc: svc.id, err: err.message }, 'IPFS refresh error');
     }
   }
