@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="220" height="20" role="img" aria-label="Powered by AgentScrape">
+  <title>Powered by AgentScrape</title>
+  <linearGradient id="s" x2="0" y2="100%">
+    <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
+    <stop offset="1" stop-opacity=".1"/>
+  </linearGradient>
+  <clipPath id="r"><rect width="220" height="20" rx="3" fill="#fff"/></clipPath>
+  <g clip-path="url(#r)">
+    <rect width="80" height="20" fill="#555"/>
+    <rect x="80" width="140" height="20" fill="#0052ff"/>
+    <rect width="220" height="20" fill="url(#s)"/>
+  </g>
+  <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" text-rendering="geometricPrecision" font-size="110">
+    <text x="400" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="700">powered by</text>
+    <text x="400" y="140" transform="scale(.1)" textLength="700">powered by</text>
+    <text x="1490" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="1280">AgentScrape</text>
+    <text x="1490" y="140" transform="scale(.1)" textLength="1280">AgentScrape</text>
+  </g>
+</svg>
