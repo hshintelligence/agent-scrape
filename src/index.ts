@@ -1010,6 +1010,29 @@ function buildApp(env: Env) {
     });
   });
 
+  // Per-service broadcast log: /broadcasts/<svc-id>.json
+  // Lets agents fetch broadcast history for a specific HSH service.
+  app.get("/broadcasts/:svcId{[a-z0-9-]+\\.json}", async (c) => {
+    const param = c.req.param("svcId");
+    const svcId = param.replace(/\.json$/, "");
+    try {
+      const upstream = await fetch(`https://broadcasting.hshintelligence.com/broadcasts/${svcId}`, {
+        cf: { cacheTtl: 30, cacheEverything: true },
+      });
+      const data = await upstream.json();
+      return c.json(data, upstream.status, {
+        "Cache-Control": "public, max-age=30, s-maxage=30",
+        "Access-Control-Allow-Origin": "*",
+      });
+    } catch (err) {
+      return c.json({
+        error: "upstream_unavailable",
+        svc_id: svcId,
+        message: "HSH broadcasting tower temporarily unreachable",
+      }, 200);
+    }
+  });
+
   // HSH broadcasts log — proxies broadcasting.hshintelligence.com/broadcasts so
   // any agent or developer can verify the lighthouse is alive 24/7. Trust signal.
   app.get("/broadcasts.json", async (c) => {

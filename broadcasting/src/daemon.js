@@ -61,6 +61,35 @@ http.createServer(async (req, res) => {
       recent: getBroadcasts().slice(0, 50),
     }, { 'Cache-Control': 'public, max-age=30' });
   }
+  // Per-service broadcast log: /broadcasts/<svc-id> or /broadcasts/<svc-id>.json
+  const svcMatch = req.url.match(/^\/broadcasts\/([a-z0-9-]+)(?:\.json)?$/);
+  if (svcMatch) {
+    const svcId = svcMatch[1];
+    const services = await loadServices();
+    const svc = services.find(s => s.id === svcId);
+    if (!svc) return send(404, { error: 'service_not_found', svc_id: svcId, available: services.map(s => s.id) });
+    const allEvents = getBroadcasts();
+    const svcEvents = allEvents.filter(e => e.svc === svcId);
+    const now = Date.now();
+    const stats = {
+      total_events_in_buffer: svcEvents.length,
+      events_last_1h:  svcEvents.filter(e => now - new Date(e.ts).getTime() < 3600000).length,
+      events_last_24h: svcEvents.filter(e => now - new Date(e.ts).getTime() < 86400000).length,
+      healthy_events:  svcEvents.filter(e => e.healthy === true).length,
+      healthy_percent: svcEvents.length > 0 ? Math.round(svcEvents.filter(e => e.healthy === true).length / svcEvents.length * 100) : 0,
+      by_worker: svcEvents.reduce((a, e) => { a[e.worker] = (a[e.worker] || 0) + 1; return a; }, {}),
+      by_endpoint: svcEvents.reduce((a, e) => { if (e.endpoint) a[e.endpoint] = (a[e.endpoint] || 0) + 1; return a; }, {}),
+      avg_latency_ms: svcEvents.length > 0 ? Math.round(svcEvents.reduce((a, e) => a + (e.ms || 0), 0) / svcEvents.length) : 0,
+      oldest_event_ts: svcEvents[svcEvents.length - 1]?.ts || null,
+      newest_event_ts: svcEvents[0]?.ts || null,
+    };
+    return send(200, {
+      org: 'HSH Intelligence',
+      service: { id: svc.id, name: svc.name, version: svc.version, status: svc.status },
+      stats,
+      recent: svcEvents.slice(0, 50),
+    }, { 'Cache-Control': 'public, max-age=30' });
+  }
   return send(404, { error: 'not found', endpoints: ['/health', '/services', '/broadcasts'] });
 }).listen(PORT, () => log.info({ port: PORT }, 'HSH Broadcasting Tower listening'));
 
