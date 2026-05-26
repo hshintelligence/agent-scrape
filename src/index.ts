@@ -957,6 +957,41 @@ function buildApp(env: Env) {
     });
   });
 
+  // A2A (Agent-to-Agent) capability card — Google A2A protocol discovery
+  // https://google.github.io/A2A/specification — agents fetch this to learn our skills
+  app.get("/.well-known/agent.json", (c) => {
+    const baseUrl = new URL(c.req.url).origin;
+    return c.json({
+      name: "AgentScrape",
+      description: "Pay-per-call web scraping for AI agents via x402 v2 on Base USDC. No signup, no API keys — agents pay autonomously per call.",
+      version: VERSION,
+      url: baseUrl,
+      provider: { organization: "HSH Intelligence", url: "https://github.com/hshintelligence/agent-scrape" },
+      capabilities: { streaming: true, pushNotifications: false, stateTransitionHistory: false },
+      authentication: { schemes: ["x402-v2"], credentials: null },
+      defaultInputModes: ["application/json"],
+      defaultOutputModes: ["application/json", "text/markdown", "image/png"],
+      skills: [
+        { id: "scrape_webpage",           name: "Scrape Webpage",            description: "Scrape any URL and return content as markdown, html, text, or json", price: PRICING.scrape,     currency: "USDC", network: "base", tags: ["web-scraping", "markdown", "html"] },
+        { id: "extract_structured_data",  name: "Extract Structured Data",   description: "AI-powered structured JSON extraction via Groq + Llama 4 Scout",      price: PRICING.extract,    currency: "USDC", network: "base", tags: ["ai", "structured-data", "llm"] },
+        { id: "screenshot_webpage",       name: "Screenshot Webpage",        description: "Capture PNG screenshot with desktop/mobile/tablet viewport control", price: PRICING.screenshot, currency: "USDC", network: "base", tags: ["screenshot", "visual", "png"] },
+        { id: "extract_metadata",         name: "Extract Metadata",          description: "Extract title, OG, Twitter cards, JSON-LD, canonical URL",            price: PRICING.metadata,   currency: "USDC", network: "base", tags: ["metadata", "seo", "open-graph"] },
+        { id: "create_browser_session",   name: "Create Browser Session",    description: "Stateful browser session persisting cookies and localStorage",        price: PRICING.session,    currency: "USDC", network: "base", tags: ["session", "state", "cookies"] },
+        { id: "run_workflow",             name: "Run Workflow",              description: "Multi-step atomic browser workflow up to 20 steps",                   price: PRICING.workflow,   currency: "USDC", network: "base", tags: ["workflow", "automation", "multi-step"] },
+      ],
+      endpoints: {
+        mcp: `${baseUrl}/mcp`,
+        x402: `${baseUrl}/.well-known/x402.json`,
+        openapi: `${baseUrl}/openapi.json`,
+        llms: `${baseUrl}/llms.txt`,
+      },
+      pay_to: PAY_TO,
+      free_tier: { limit_per_wallet: FREE_TIER_LIMIT, window_days: 30 },
+      license: "MIT",
+      repository: "https://github.com/hshintelligence/agent-scrape",
+    });
+  });
+
   // OpenAPI 3.1 spec for traditional tooling discovery
   app.get("/openapi.json", (c) => {
     const baseUrl = new URL(c.req.url).origin;
@@ -1287,7 +1322,7 @@ https://github.com/hshintelligence/agent-scrape (MIT)
   app.post("/workflow", handleWorkflow);
   app.post("/session", handleSession);
 
-  app.notFound((c) => c.json({ error: "Not Found", available_endpoints: ["GET /", "GET /.well-known/x402", "GET /openapi.json", "GET /llms.txt", "POST /mcp", "POST /scrape", "POST /extract", "POST /screenshot", "POST /metadata", "POST /workflow", "POST /session"] }, 404));
+  app.notFound((c) => c.json({ error: "Not Found", available_endpoints: ["GET /", "GET /.well-known/x402", "GET /.well-known/agent.json", "GET /openapi.json", "GET /llms.txt", "POST /mcp", "POST /scrape", "POST /extract", "POST /screenshot", "POST /metadata", "POST /workflow", "POST /session"] }, 404));
 
   app.onError((err, c) => {
     console.error("Worker error:", err);
