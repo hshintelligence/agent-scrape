@@ -868,6 +868,7 @@ function buildApp(env: Env) {
 
   // Service identity (free)
   app.get("/", (c) => {
+    c.header("Link", `<${new URL(c.req.url).origin}/schema.json>; rel="describedby"; type="application/ld+json", <${new URL(c.req.url).origin}/.well-known/agent.json>; rel="alternate"; type="application/json", <${new URL(c.req.url).origin}/.well-known/x402.json>; rel="payment"; type="application/json"`);
     return c.json({
       service: "AgentScrape",
       tagline: "Pay-per-call web scraping for AI agents — no signup, no API keys, just USDC",
@@ -948,6 +949,116 @@ function buildApp(env: Env) {
   };
   app.get("/.well-known/x402", x402Manifest);
   app.get("/.well-known/x402.json", x402Manifest);
+
+  // Schema.org Service structured data — for search engines, LLM crawlers, knowledge graphs
+  // RFC 8288 Link header on homepage points here so crawlers auto-discover
+  app.get("/schema.json", (c) => {
+    const baseUrl = new URL(c.req.url).origin;
+    return c.json({
+      "@context": "https://schema.org",
+      "@type": "Service",
+      "@id": `${baseUrl}/#service`,
+      "name": "AgentScrape",
+      "alternateName": ["Agent Scrape", "HSH AgentScrape"],
+      "description": "Pay-per-call web scraping for AI agents via the x402 payment protocol on Base USDC. No signup, no API keys — agents pay autonomously per call.",
+      "url": baseUrl,
+      "provider": {
+        "@type": "Organization",
+        "@id": "https://github.com/hshintelligence#org",
+        "name": "HSH Intelligence",
+        "url": "https://github.com/hshintelligence",
+        "email": "contact@healingsunhaven.com",
+        "sameAs": ["https://github.com/hshintelligence", "https://glama.ai/mcp/servers/hshintelligence/agent-scrape", "https://smithery.ai/server/hshintelligence/agentscrape"]
+      },
+      "serviceType": "Web Scraping API",
+      "category": ["Web Scraping", "Browser Automation", "AI Agents", "Agent-Native API", "Pay-Per-Call API"],
+      "audience": { "@type": "Audience", "audienceType": "AI Agents and Developers" },
+      "areaServed": { "@type": "Place", "name": "Worldwide" },
+      "offers": {
+        "@type": "AggregateOffer",
+        "priceCurrency": "USD",
+        "lowPrice": "0.001",
+        "highPrice": "0.008",
+        "offerCount": 6,
+        "priceSpecification": { "@type": "UnitPriceSpecification", "priceType": "https://schema.org/PerCallPrice", "price": "0.001-0.008", "priceCurrency": "USDC" },
+        "offers": [
+          { "@type": "Offer", "name": "scrape_webpage",          "description": "Scrape any URL to markdown/html/text/json",                     "price": PRICING.scrape,     "priceCurrency": "USDC", "category": "scrape" },
+          { "@type": "Offer", "name": "extract_structured_data", "description": "AI-powered structured JSON extraction via Groq + Llama 4 Scout", "price": PRICING.extract,    "priceCurrency": "USDC", "category": "extract" },
+          { "@type": "Offer", "name": "screenshot_webpage",      "description": "PNG screenshot with viewport control",                            "price": PRICING.screenshot, "priceCurrency": "USDC", "category": "screenshot" },
+          { "@type": "Offer", "name": "extract_metadata",        "description": "Extract title, OG, Twitter cards, JSON-LD",                       "price": PRICING.metadata,   "priceCurrency": "USDC", "category": "metadata" },
+          { "@type": "Offer", "name": "create_browser_session",  "description": "Stateful browser session persisting cookies and localStorage",   "price": PRICING.session,    "priceCurrency": "USDC", "category": "session" },
+          { "@type": "Offer", "name": "run_workflow",            "description": "Multi-step atomic browser workflow up to 20 steps",              "price": PRICING.workflow,   "priceCurrency": "USDC", "category": "workflow" }
+        ]
+      },
+      "potentialAction": {
+        "@type": "ConsumeAction",
+        "target": { "@type": "EntryPoint", "urlTemplate": `${baseUrl}/{tool}`, "actionPlatform": ["http://schema.org/DesktopWebPlatform", "http://schema.org/MobileWebPlatform", "http://schema.org/IOSPlatform", "http://schema.org/AndroidPlatform"], "contentType": "application/json", "httpMethod": "POST" }
+      },
+      "termsOfService": "https://github.com/hshintelligence/agent-scrape/blob/main/LICENSE",
+      "isBasedOn": { "@type": "CreativeWork", "name": "x402 v2 protocol", "url": "https://www.x402.org" },
+      "license": "https://spdx.org/licenses/MIT",
+      "additionalProperty": [
+        { "@type": "PropertyValue", "name": "paymentProtocol", "value": "x402-v2" },
+        { "@type": "PropertyValue", "name": "network",         "value": "Base mainnet (eip155:8453)" },
+        { "@type": "PropertyValue", "name": "asset",           "value": "USDC (0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913)" },
+        { "@type": "PropertyValue", "name": "facilitator",     "value": "Coinbase CDP (api.cdp.coinbase.com/platform/v2/x402)" },
+        { "@type": "PropertyValue", "name": "mcpEndpoint",     "value": `${baseUrl}/mcp` },
+        { "@type": "PropertyValue", "name": "a2aCard",         "value": `${baseUrl}/.well-known/agent.json` },
+        { "@type": "PropertyValue", "name": "ipfsCid",         "value": "QmWFWxeWCFeuxFtrdxLCjbUseMbmTK5QHdHV7CZ53p5eZA" },
+        { "@type": "PropertyValue", "name": "freeTierCalls",   "value": String(FREE_TIER_LIMIT) }
+      ]
+    });
+  });
+
+  // ai-plugin.json — legacy OpenAI/ChatGPT plugin discovery, still widely indexed
+  app.get("/.well-known/ai-plugin.json", (c) => {
+    const baseUrl = new URL(c.req.url).origin;
+    return c.json({
+      schema_version: "v1",
+      name_for_human: "AgentScrape",
+      name_for_model: "agent_scrape",
+      description_for_human: "Pay-per-call web scraping for AI agents — no signup, no API keys, just USDC on Base.",
+      description_for_model: "Use AgentScrape to scrape webpages, extract structured data, capture screenshots, get metadata, run browser workflows, or create stateful browser sessions. Payment is per-call in USDC via the x402 v2 protocol on Base.",
+      auth: { type: "none" },
+      api: { type: "openapi", url: `${baseUrl}/openapi.json` },
+      logo_url: `${baseUrl}/logo.png`,
+      contact_email: "contact@healingsunhaven.com",
+      legal_info_url: "https://github.com/hshintelligence/agent-scrape/blob/main/LICENSE"
+    });
+  });
+
+  // security.txt — RFC 9116, security contact discovery
+  app.get("/.well-known/security.txt", (c) => {
+    return c.text(
+      "Contact: mailto:contact@healingsunhaven.com\n" +
+      "Expires: 2027-12-31T23:59:59.000Z\n" +
+      "Preferred-Languages: en\n" +
+      "Canonical: https://agent-scrape.healingsunhaven.workers.dev/.well-known/security.txt\n" +
+      "Policy: https://github.com/hshintelligence/agent-scrape/security/policy\n" +
+      "Acknowledgments: https://github.com/hshintelligence/agent-scrape/security/advisories\n",
+      200,
+      { "Content-Type": "text/plain; charset=utf-8" }
+    );
+  });
+
+  // humans.txt — for humans, not bots
+  app.get("/humans.txt", (c) => {
+    return c.text(
+      "/* TEAM */\n" +
+      "  Founder: Irfan Khan\n" +
+      "  Company: HSH Intelligence (Healing Sun Haven LLC, Wyoming)\n" +
+      "  Contact: contact@healingsunhaven.com\n" +
+      "  GitHub:  https://github.com/hshintelligence\n\n" +
+      "/* SITE */\n" +
+      "  Last update: " + new Date().toISOString().slice(0, 10) + "\n" +
+      "  Language:    English\n" +
+      "  Standards:   x402, MCP, A2A, Schema.org, OpenAPI 3.1\n" +
+      "  License:     MIT\n" +
+      "  Components:  Cloudflare Workers, Hono, x402 v2, Groq, Llama 4 Scout\n",
+      200,
+      { "Content-Type": "text/plain; charset=utf-8" }
+    );
+  });
 
   // Glama ownership verification — proves we operate this MCP server
   app.get("/.well-known/glama.json", (c) => {
@@ -1322,7 +1433,7 @@ https://github.com/hshintelligence/agent-scrape (MIT)
   app.post("/workflow", handleWorkflow);
   app.post("/session", handleSession);
 
-  app.notFound((c) => c.json({ error: "Not Found", available_endpoints: ["GET /", "GET /.well-known/x402", "GET /.well-known/agent.json", "GET /openapi.json", "GET /llms.txt", "POST /mcp", "POST /scrape", "POST /extract", "POST /screenshot", "POST /metadata", "POST /workflow", "POST /session"] }, 404));
+  app.notFound((c) => c.json({ error: "Not Found", available_endpoints: ["GET /", "GET /.well-known/x402", "GET /.well-known/agent.json", "GET /.well-known/ai-plugin.json", "GET /.well-known/security.txt", "GET /schema.json", "GET /humans.txt", "GET /openapi.json", "GET /llms.txt", "POST /mcp", "POST /scrape", "POST /extract", "POST /screenshot", "POST /metadata", "POST /workflow", "POST /session"] }, 404));
 
   app.onError((err, c) => {
     console.error("Worker error:", err);
