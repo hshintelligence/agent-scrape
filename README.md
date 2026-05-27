@@ -284,3 +284,71 @@ Built by [HSH Intelligence](https://hshintelligence.com), operated by Healing Su
 ---
 
 **Pay-per-call web scraping for AI agents — no signup, no API keys, just USDC.**
+
+
+## Using AgentScrape from ElizaOS
+
+ElizaOS supports remote MCP servers natively via the [`@elizaos/plugin-mcp`](https://www.npmjs.com/package/@elizaos/plugin-mcp) plugin. AgentScrape works out of the box — no custom integration needed.
+
+### Install the MCP plugin
+
+```bash
+bun add @elizaos/plugin-mcp
+# or
+npm install @elizaos/plugin-mcp
+```
+
+### Configure your character to use AgentScrape
+
+In your ElizaOS character JSON, add the plugin and point the MCP server config at AgentScrape's Streamable HTTP endpoint:
+
+```json
+{
+  "name": "ResearchAgent",
+  "plugins": ["@elizaos/plugin-mcp"],
+  "settings": {
+    "mcp": {
+      "servers": {
+        "agentscrape": {
+          "type": "streamable-http",
+          "name": "AgentScrape",
+          "url": "https://agent-scrape.healingsunhaven.workers.dev/mcp",
+          "timeout": 60
+        }
+      }
+    }
+  }
+}
+```
+
+### Available tools (auto-discovered by ElizaOS)
+
+Once configured, the agent automatically discovers all six AgentScrape tools:
+
+| Tool | Cost | Purpose |
+|---|---|---|
+| `scrape_webpage` | $0.003 USDC | Markdown/HTML/text/JSON scrape |
+| `extract_structured_data` | $0.005 USDC | AI extraction via Groq + Llama 4 Scout |
+| `screenshot_webpage` | $0.003 USDC | PNG screenshot with viewport control |
+| `extract_metadata` | $0.002 USDC | Title, OG, Twitter, JSON-LD |
+| `create_browser_session` | $0.001 USDC | Stateful browser session |
+| `run_workflow` | $0.008 USDC | Multi-step atomic workflow up to 20 steps |
+
+### Free tier
+
+The first 10 calls per wallet in the first 30 days are free. After that, calls are paid in USDC on Base mainnet (`eip155:8453`) via the x402 v2 payment protocol. To pay, supply the `X-PAYMENT-RESPONSE` header with an x402 payment receipt on retry — the standard x402 flow.
+
+### Example prompt
+
+Once the plugin is wired up, your ElizaOS agent can use AgentScrape transparently:
+
+> User: "Scrape https://www.x402.org and give me a two-sentence summary."
+
+ElizaOS routes the request through `@elizaos/plugin-mcp`, which calls AgentScrape's `scrape_webpage` tool, and the agent answers based on the live page content.
+
+### Resources
+
+- AgentScrape Worker: https://agent-scrape.healingsunhaven.workers.dev
+- x402 manifest: https://agent-scrape.healingsunhaven.workers.dev/.well-known/x402.json
+- A2A Agent Card: https://agent-scrape.healingsunhaven.workers.dev/.well-known/agent.json
+- Source: https://github.com/hshintelligence/agent-scrape
