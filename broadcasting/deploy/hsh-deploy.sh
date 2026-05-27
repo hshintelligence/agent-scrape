@@ -93,9 +93,6 @@ echo ""
 need() { command -v "$1" >/dev/null 2>&1 || { echo "✗ missing: $1"; exit 1; }; }
 need gh
 need git
-need_or_warn() { command -v "$1" >/dev/null 2>&1 || echo "  • optional: $1 not found ($2)"; }
-need_or_warn mcp-publisher "Step 12 (Official MCP Registry publish) will be skipped"
-
 
 # wrangler: prefer global, fall back to npx (Cloudflare CLI is often project-local)
 if command -v wrangler >/dev/null 2>&1; then
@@ -189,81 +186,6 @@ Pay-per-call in USDC on Base mainnet via the x402 v2 protocol. No signup, no API
 
 This service is broadcast 24/7 by the [HSH Broadcasting Tower](https://broadcasting.hshintelligence.com).
 See all HSH services: \`$WORKER_URL/services.json\`
-
-## Using $SVC_NAME from ElizaOS
-
-ElizaOS supports remote MCP servers via the [\`@elizaos/plugin-mcp\`](https://www.npmjs.com/package/@elizaos/plugin-mcp) package. $SVC_NAME works out of the box — no custom integration needed.
-
-\`\`\`bash
-bun add @elizaos/plugin-mcp
-\`\`\`
-
-In your ElizaOS character JSON:
-
-\`\`\`json
-{
-  "name": "YourAgent",
-  "plugins": ["@elizaos/plugin-mcp"],
-  "settings": {
-    "mcp": {
-      "servers": {
-        "$SVC_ID": {
-          "type": "streamable-http",
-          "name": "$SVC_NAME",
-          "url": "$WORKER_URL/mcp",
-          "timeout": 60
-        }
-      }
-    }
-  }
-}
-\`\`\`
-
-ElizaOS auto-discovers $SVC_NAME's tools via standard MCP protocol negotiation.
-
-## Using $SVC_NAME from LangChain.js
-
-\`\`\`typescript
-import { MultiServerMCPClient } from "@langchain/mcp-adapters";
-
-const client = new MultiServerMCPClient({
-  mcpServers: {
-    $SVC_ID: { url: "$WORKER_URL/mcp" }
-  }
-});
-const tools = await client.getTools();
-\`\`\`
-
-## Using $SVC_NAME from LangChain Python
-
-\`\`\`python
-from langchain_mcp_adapters.client import MultiServerMCPClient
-
-client = MultiServerMCPClient({
-    "$SVC_ID": {
-        "url": "$WORKER_URL/mcp",
-        "transport": "streamable_http",
-    }
-})
-tools = await client.get_tools()
-\`\`\`
-
-## Using $SVC_NAME from LlamaIndex
-
-\`\`\`python
-from llama_index.tools.mcp import BasicMCPClient, McpToolSpec
-
-mcp_client = BasicMCPClient("$WORKER_URL/mcp")
-tools = McpToolSpec(client=mcp_client).to_tool_list()
-\`\`\`
-
-## Discoverability
-
-- **Official MCP Registry**: \`io.github.${HSH_ORG}/${SVC_ID}\`
-- **A2A Agent Card**: $WORKER_URL/.well-known/agent.json
-- **x402 manifest**: $WORKER_URL/.well-known/x402.json
-- **OpenAPI 3.1**: $WORKER_URL/openapi.json
-- **llms.txt**: $WORKER_URL/llms.txt
 
 ## License
 
@@ -393,87 +315,9 @@ print(\\\"  ✓ Descriptor updated with CID\\\")
 '"
 
 # ============================================================
-# STEP 12 — Publish to Official MCP Registry (canonical Anthropic registry)
+# STEP 12 — Final verification
 # ============================================================
-echo "[12/16] Publishing to Official MCP Registry..."
-if command -v mcp-publisher >/dev/null 2>&1; then
-  # Build server.json for the canonical registry
-  REGISTRY_DIR="$TMP_DIR/mcp-registry"
-  mkdir -p "$REGISTRY_DIR"
-  python3 - <<PYREG
-import json
-desc = "${SVC_TAGLINE}"
-# Registry enforces description <= 100 chars
-if len(desc) > 100:
-    desc = desc[:97] + "..."
-server = {
-  "\$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": f"io.github.${HSH_ORG}/${SVC_ID}",
-  "title": "${SVC_NAME}",
-  "description": desc,
-  "version": "0.1.0",
-  "repository": {
-    "url": f"https://github.com/${HSH_ORG}/${SVC_ID}",
-    "source": "github"
-  },
-  "websiteUrl": "${WORKER_URL}",
-  "remotes": [
-    {
-      "type": "streamable-http",
-      "url": f"${WORKER_URL}/mcp"
-    }
-  ]
-}
-with open("$REGISTRY_DIR/server.json", "w") as f:
-    json.dump(server, f, indent=2)
-print("  ✓ server.json prepared")
-PYREG
-  ( cd "$REGISTRY_DIR" && \
-    mcp-publisher validate 2>&1 | sed 's/^/    /' && \
-    if mcp-publisher publish 2>&1 | tee /tmp/mcp-publish.log | sed 's/^/    /' | grep -q "Successfully published"; then
-      echo "  ✓ Published as io.github.${HSH_ORG}/${SVC_ID}"
-    elif grep -q "Invalid or expired Registry JWT" /tmp/mcp-publish.log; then
-      echo "  ⚠ Registry JWT expired — run \"mcp-publisher login github\" then re-run hsh-deploy"
-      echo "    (this step is optional — other layers shipped successfully)"
-    else
-      echo "  ⚠ Publish failed (see above) — continuing with remaining steps"
-    fi
-  )
-  # Copy the descriptor into the new service's GitHub repo for reproducibility
-  mkdir -p "$TMP_DIR/${SVC_ID}/mcp-registry"
-  cp "$REGISTRY_DIR/server.json" "$TMP_DIR/${SVC_ID}/mcp-registry/server.json"
-  cat > "$TMP_DIR/${SVC_ID}/mcp-registry/README.md" <<MDEOF
-# Official MCP Registry artifact
-
-This directory contains the canonical \`server.json\` published to the
-[Official MCP Registry](https://registry.modelcontextprotocol.io) at
-\`io.github.${HSH_ORG}/${SVC_ID}\`.
-
-## Re-publish on version bump
-
-\\\`\\\`\\\`bash
-brew install mcp-publisher
-mcp-publisher login github
-# bump "version" in server.json to match the new ${SVC_NAME} release
-mcp-publisher validate
-mcp-publisher publish
-\\\`\\\`\\\`
-MDEOF
-  ( cd "$TMP_DIR/${SVC_ID}" && \
-    git -c user.email="\$COMMIT_EMAIL" -c user.name="HSH Intelligence" \
-      add mcp-registry/ && \
-    git -c user.email="\$COMMIT_EMAIL" -c user.name="HSH Intelligence" \
-      commit -m "feat: publish to Official MCP Registry as io.github.${HSH_ORG}/${SVC_ID}" -q && \
-    git push origin main -q 2>&1 | tail -2 )
-  echo "  ✓ mcp-registry/ artifact committed to repo"
-else
-  echo "  ⚠ mcp-publisher not installed — skipping (install with: brew install mcp-publisher)"
-fi
-
-# ============================================================
-# STEP 13 — Final verification
-# ============================================================
-echo "[13/16] Verifying deployment..."
+echo "[12/15] Verifying deployment..."
 sleep 4
 SURFACES=(
   "/"
@@ -504,13 +348,13 @@ echo "  Per-service surfaces healthy: $healthy/$total"
 
 # Verify daemon knows about the new service
 echo ""
-echo "[14/16] Verifying daemon sees the service..."
+echo "[13/15] Verifying daemon sees the service..."
 DAEMON_SERVICES=$(ssh -q "$HETZNER_HOST" "curl -s http://localhost:3000/services")
 echo "  Daemon services: $DAEMON_SERVICES"
 
 # Verify catalog endpoint includes it
 echo ""
-echo "[15/16] Verifying public catalog includes it..."
+echo "[14/15] Verifying public catalog includes it..."
 sleep 3
 CATALOG=$(curl -s "https://agent-scrape.healingsunhaven.workers.dev/services.json" | python3 -c "
 import json, sys
@@ -521,95 +365,7 @@ for s in d.get('services', []): print(f'    - {s[\"id\"]} ({s[\"name\"]})')
 echo "$CATALOG"
 
 # ============================================================
-# STEP 16 — Prep awesome-list PR branches + print human checklist
-# ============================================================
-echo "[16/16] Prepping registry PR branches (for human submit)..."
-
-PR_WORK_DIR="$TMP_DIR/registry-prs"
-mkdir -p "$PR_WORK_DIR"
-
-prep_registry_pr() {
-  local upstream="$1"        # e.g. punkpeye/awesome-mcp-servers
-  local fork_name="$2"       # e.g. awesome-mcp-servers-punkpeye
-  local section="$3"         # the README section we will insert into
-  local entry_line="$4"      # the markdown line to add
-  local insert_after_marker="$5"  # text to insert AFTER (so we sort correctly)
-
-  local fork_dir="$PR_WORK_DIR/$fork_name"
-  echo "  → $upstream"
-
-  # Fork (idempotent — silently no-op if already forked)
-  gh api -X POST "/repos/${upstream}/forks" \
-    -F name="$fork_name" \
-    -F default_branch_only=true >/dev/null 2>&1 || true
-  sleep 3
-
-  # Clone our fork shallowly
-  if ! git clone --depth 1 "https://github.com/${HSH_ORG}/${fork_name}.git" "$fork_dir" 2>/dev/null; then
-    echo "    ⚠ clone failed — skipping (registry may have moved/be private)"
-    return
-  fi
-
-  cd "$fork_dir" || return
-  git remote add upstream "https://github.com/${upstream}.git" 2>/dev/null || true
-  git fetch upstream "$(git symbolic-ref --short HEAD)" 2>/dev/null
-  git reset --hard "upstream/$(git symbolic-ref --short HEAD)" -q
-
-  git checkout -b "add-${SVC_ID}" -q 2>/dev/null
-
-  # Generic best-effort insert: append the entry at the end of the README's matching section.
-  # Maintainers usually want alphabetical, so this is intentionally conservative.
-  if [ -f README.md ]; then
-    python3 - <<PYINS
-with open("README.md", "r") as f: content = f.read()
-section = """$section"""
-entry = """$entry_line"""
-if section in content and entry not in content:
-    # Insert one blank line + entry after the section header line
-    idx = content.find(section) + len(section)
-    content = content[:idx] + "\n\n" + entry + content[idx:]
-    with open("README.md", "w") as f: f.write(content)
-    print("    ✓ inserted entry")
-else:
-    print("    ⚠ section header not found OR entry already present — leaving file untouched")
-PYINS
-
-    git -c user.email="$COMMIT_EMAIL" -c user.name="HSH Intelligence" \
-      add README.md && \
-    git -c user.email="$COMMIT_EMAIL" -c user.name="HSH Intelligence" \
-      commit -m "Add ${SVC_NAME} to ${upstream%%/*} registry" -q 2>/dev/null && \
-    git push -u origin "add-${SVC_ID}" -q 2>&1 | tail -2 | sed "s/^/    /"
-
-    # Print the manual PR URL
-    PR_URL="https://github.com/${upstream}/compare/main...${HSH_ORG}:${fork_name}:add-${SVC_ID}"
-    echo "    🔗 PR URL: $PR_URL"
-  fi
-  cd "$REPO_ROOT" || true
-}
-
-# Generic ENTRY for awesome-mcp-servers style: simple markdown bullet
-ENTRY_BULLET="- [${HSH_ORG}/${SVC_ID}](https://github.com/${HSH_ORG}/${SVC_ID}) - ${SVC_TAGLINE} (x402 on Base USDC, remote MCP at \\`${WORKER_URL}/mcp\\`). MIT licensed."
-
-# Best-effort prep — these may fail if maintainer disabled forks/PRs; failures are non-fatal
-prep_registry_pr \
-  "punkpeye/awesome-mcp-servers" \
-  "awesome-mcp-servers" \
-  "### 🌐 <a name=\"browser-automation\"></a>Browser Automation" \
-  "$ENTRY_BULLET" \
-  "" || true
-
-prep_registry_pr \
-  "TensorBlock/awesome-mcp-servers" \
-  "awesome-mcp-servers-tensorblock" \
-  "## 🌐 Browser Automation & Web Scraping" \
-  "$ENTRY_BULLET" \
-  "" || true
-
-# Reset working directory before final summary
-cd "$REPO_ROOT" 2>/dev/null || cd "$TMP_DIR" 2>/dev/null
-
-# ============================================================
-# STEP 17 — Done
+# STEP 15 — Done
 # ============================================================
 echo ""
 echo "================================================================"
@@ -621,32 +377,9 @@ echo "  GitHub:    https://github.com/$GH_REPO"
 echo "  Catalog:   $WORKER_URL/services.json"
 echo "  Logs:      $WORKER_URL/broadcasts/${SVC_ID}.json"
 echo ""
-echo ""
-echo "  ╔══════════════════════════════════════════════════════════════╗"
-echo "  ║  HUMAN ACTIONS REQUIRED — copy/paste these PR URLs to ship  ║"
-echo "  ╚══════════════════════════════════════════════════════════════╝"
-echo ""
-echo "  REGISTRIES (already forked + branch pushed — just open + submit):"
-echo "    Glama Servers (browser):       https://glama.ai/mcp/servers"
-echo "    Smithery (browser):            https://smithery.ai/new"
-echo ""
-echo "    Awesome-list PRs (branches were pushed in Step 16 — open URLs above to submit):"
-echo "      punkpeye/awesome-mcp-servers (87.9k⭐)"
-echo "      TensorBlock/awesome-mcp-servers (705⭐)"
-echo "      Also consider: jaw9c/awesome-remote-mcp-servers (1.1k⭐ — for remote MCP servers)"
-echo ""
-echo "  FRAMEWORK INTEGRATIONS (optional but high-leverage):"
-echo "    Add example PRs to:"
-echo "      - langchain-ai/langchainjs/libs/langchain-mcp-adapters/examples/"
-echo "      - langchain-ai/langchain-mcp-adapters/examples/"
-echo "      - run-llama/llama_index/llama-index-integrations/tools/llama-index-tools-mcp/examples/"
-echo "      - coinbase/agentkit/typescript/agentkit/src/action-providers/x402/README.md"
-echo ""
-echo "  DNS + SOCIAL (one-time per service):"
-echo "    AID DNS TXT record at Cloudflare:  _agent.${SVC_ID}.hshintelligence.com"
-echo "    Announce on X:                       @hshintelligence (tag @coinbase @LangChainAI @llama_index)"
-echo "    Announce on Farcaster:               (needs funded OP-mainnet wallet for handle)"
-echo ""
-echo "  CODE WORK:"
-echo "    Fill service-specific tools in src/index.ts and run \`wrangler deploy\`"
+echo "  Next steps (human-required):"
+echo "    1. Add AID DNS TXT record manually at Cloudflare hshintelligence.com zone"
+echo "       (_agent.${SVC_ID} → service metadata)"
+echo "    2. Submit to MCP registries (Glama, Smithery, mcp.so) — browser-form steps"
+echo "    3. Fill in service-specific tools in src/index.ts and redeploy"
 echo "================================================================"
