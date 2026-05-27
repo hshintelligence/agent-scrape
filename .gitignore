@@ -166,3 +166,6 @@ dist
 !.env.example
 .wrangler/
 broadcasting/.env
+
+# mcp-publisher working directory (not committed; server.json copy is under mcp-registry/)
+mcp-registry-publish/
