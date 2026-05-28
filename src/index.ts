@@ -455,6 +455,65 @@ async function checkAndIncrementFreeTier(
 }
 
 // ----------------------------------------------------------------------------
+// REQUEST COUNTER — KV-backed, mirrors free-tier helper style
+// Tracks total calls, per-endpoint calls, and paid-vs-free split.
+// Eventually-consistent (KV) — fine for analytics, not used for billing.
+// ----------------------------------------------------------------------------
+
+async function bumpStats(
+  env: Env,
+  endpoint: string,
+  paid: boolean,
+): Promise<void> {
+  // Increment three counters: total, per-endpoint, and paid/free.
+  // Best-effort — never block or fail the actual request on a stats error.
+  try {
+    const keys = [
+      "stats:total",
+      `stats:ep:${endpoint}`,
+      paid ? "stats:paid" : "stats:free",
+    ];
+    await Promise.all(
+      keys.map(async (key) => {
+        const raw = await env.AGENTSCRAPE_SESSIONS.get(key);
+        const n = raw ? parseInt(raw, 10) : 0;
+        await env.AGENTSCRAPE_SESSIONS.put(key, String(n + 1));
+      }),
+    );
+    // Record last-call timestamp for "when was I last hit"
+    await env.AGENTSCRAPE_SESSIONS.put("stats:last_call_ts", new Date().toISOString());
+  } catch {
+    // swallow — analytics must never break a paid call
+  }
+}
+
+async function readStats(env: Env): Promise<Record<string, unknown>> {
+  const endpoints = ["scrape", "extract", "screenshot", "metadata", "workflow", "session"];
+  const getNum = async (key: string): Promise<number> => {
+    const raw = await env.AGENTSCRAPE_SESSIONS.get(key);
+    return raw ? parseInt(raw, 10) : 0;
+  };
+  const [total, paid, free, lastCall, ...epCounts] = await Promise.all([
+    getNum("stats:total"),
+    getNum("stats:paid"),
+    getNum("stats:free"),
+    env.AGENTSCRAPE_SESSIONS.get("stats:last_call_ts"),
+    ...endpoints.map((e) => getNum(`stats:ep:${e}`)),
+  ]);
+  const by_endpoint: Record<string, number> = {};
+  endpoints.forEach((e, i) => { by_endpoint[e] = epCounts[i] as number; });
+  return {
+    service: "AgentScrape",
+    total_calls: total,
+    paid_calls: paid,
+    free_calls: free,
+    by_endpoint,
+    last_call_ts: lastCall || null,
+    note: "KV-backed counters, eventually-consistent. Excludes discovery/well-known endpoint hits.",
+  };
+}
+
+// ----------------------------------------------------------------------------
 // CORE LOGIC — pure functions, no HTTP/MCP concerns
 // Used by both HTTP handlers AND MCP tool callbacks
 // ----------------------------------------------------------------------------
@@ -726,6 +785,14 @@ async function handleWorkflow(c: Context<{ Bindings: Env }>) {
 
 async function dispatchPaidEndpoint(c: Context<{ Bindings: Env }>): Promise<Response> {
   const path = c.req.path;
+  const endpoint = path.replace(/^\//, "");
+  // Count this call (best-effort). A request reaching here has passed the
+  // x402 payment gate OR consumed a free-tier slot, so it's a real tool call.
+  // We treat presence of a payment header as "paid", else "free".
+  const paid = !!(c.req.header("X-Payment") || c.req.header("Payment-Signature"));
+  if (PAID_ROUTES.has(path)) {
+    await bumpStats(c.env, endpoint, paid);
+  }
   if (path === "/scrape") return handleScrape(c);
   if (path === "/extract") return handleExtract(c);
   if (path === "/screenshot") return handleScreenshot(c);
@@ -1059,6 +1126,14 @@ function buildApp(env: Env) {
   // discovering AgentScrape learns about all current and future HSH services
   // in one fetch. Multi-tenant: future HSH services drop in via services/*.json
   // on Hetzner without redeploying this Worker.
+  app.get("/stats.json", async (c) => {
+    const stats = await readStats(c.env);
+    return c.json(stats, 200, {
+      "Cache-Control": "public, max-age=10",
+      "Access-Control-Allow-Origin": "*",
+    });
+  });
+
   app.get("/services.json", async (c) => {
     try {
       const upstream = await fetch("https://broadcasting.hshintelligence.com/services", {
