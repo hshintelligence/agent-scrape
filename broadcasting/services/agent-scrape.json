@@ -25,7 +25,7 @@
     "chain_id": "eip155:8453",
     "asset": "USDC",
     "asset_contract": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-    "pay_to": "0x3F3337295fea3613A5f128a8E834A0dca30f9E9a",
+    "pay_to": "0xf2b8fFa9611d95f4F5dEf304453D5CEb2a6Fb72B",
     "facilitator": "https://api.cdp.coinbase.com/platform/v2/x402"
   },
   "free_tier": { "limit_per_wallet": 10, "window_days": 30 },

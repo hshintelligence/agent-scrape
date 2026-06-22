@@ -10,7 +10,7 @@ import { HTTPFacilitatorClient } from "@x402/core/server";
 
 interface Env {}
 
-const PAY_TO = "0x3F3337295fea3613A5f128a8E834A0dca30f9E9a";
+const PAY_TO = "0xf2b8fFa9611d95f4F5dEf304453D5CEb2a6Fb72B";
 const NETWORK = "eip155:8453"; // Base mainnet
 const FACILITATOR_URL = "https://facilitator.xpay.sh";
 

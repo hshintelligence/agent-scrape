@@ -3,7 +3,7 @@
 // ============================================================================
 // Stack: Cloudflare Workers + Hono + @x402/hono v2 + agents/mcp + agents/x402
 // Network: Base mainnet (eip155:8453)
-// payTo:   0x3F3337295fea3613A5f128a8E834A0dca30f9E9a
+// payTo:   0xf2b8fFa9611d95f4F5dEf304453D5CEb2a6Fb72B
 // Pricing: $0.001 flat for 48h validation, then ramp to tiered matrix
 // Free tier (HTTP only): 10 calls/wallet/30d, tracked in KV by x402-payer
 //
@@ -29,9 +29,15 @@ import { declareDiscoveryExtension, bazaarResourceServerExtension } from "@x402/
 // ----------------------------------------------------------------------------
 
 const VERSION = "0.6.0";
-const PAY_TO = "0x3F3337295fea3613A5f128a8E834A0dca30f9E9a";
+const PAY_TO = "0xf2b8fFa9611d95f4F5dEf304453D5CEb2a6Fb72B";
 const NETWORK = "eip155:8453"; // Base mainnet
 const FACILITATOR_URL = "https://api.cdp.coinbase.com/platform/v2/x402";
+
+// Solana advertising (settlement infra: TBD next session — currently advertised in 402 challenge only)
+const SOLANA_PAY_TO = "6hTnhTyNMPYypc6g4VQ1cNLigUocHjdbVGoAmg1o2xJi";
+const SOLANA_NETWORK = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
+const SOLANA_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const SOLANA_FEE_PAYER = "2wKupLR9q6wXYppw8Gr2NvWxKBUqm4PPJKkQfoxHDBg4";
 const GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
 
 const PRICING = {
@@ -998,10 +1004,33 @@ function buildApp(env: Env) {
     return c.json({
       x402Version: 2,
       service: "AgentScrape",
-      description: "Pay-per-call web scraping for AI agents on Base USDC",
+      description: "Pay-per-call web scraping for AI agents on Base USDC (Solana coming soon)",
+      // Legacy single-network fields (preserved for backward compatibility)
       payTo: PAY_TO,
       network: NETWORK,
       facilitator: FACILITATOR_URL,
+      // Multi-network advertising (Base = live, Solana = advertised, settlement TBD)
+      networks: [
+        {
+          network: "base",
+          chain_id: NETWORK,
+          asset: "USDC",
+          asset_contract: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          pay_to: PAY_TO,
+          facilitator: FACILITATOR_URL,
+          status: "live",
+        },
+        {
+          network: "solana",
+          chain_id: SOLANA_NETWORK,
+          asset: "USDC",
+          asset_contract: SOLANA_USDC_MINT,
+          pay_to: SOLANA_PAY_TO,
+          fee_payer: SOLANA_FEE_PAYER,
+          status: "advertised",
+          note: "Settlement infrastructure shipping next release",
+        },
+      ],
       routes: [
         { method: "POST", path: "/scrape",     url: `${baseUrl}/scrape`,     price: PRICING.scrape,     asset: "USDC", description: "Scrape any URL to markdown/html/text/json" },
         { method: "POST", path: "/extract",    url: `${baseUrl}/extract`,    price: PRICING.extract,    asset: "USDC", description: "AI-powered structured extraction via Groq Llama 4 Scout" },

@@ -5,7 +5,7 @@ import { Hono } from "hono";
 const VERSION = "0.1.0";
 const SVC_ID = "{{SVC_ID}}";
 const SVC_NAME = "{{SVC_NAME}}";
-const PAY_TO = "0x3F3337295fea3613A5f128a8E834A0dca30f9E9a";
+const PAY_TO = "0xf2b8fFa9611d95f4F5dEf304453D5CEb2a6Fb72B";
 const NETWORK = "eip155:8453";
 const FACILITATOR_URL = "https://api.cdp.coinbase.com/platform/v2/x402";
 
